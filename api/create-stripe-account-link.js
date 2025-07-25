@@ -1,4 +1,4 @@
-// api/create-stripe-account-link.js
+ // api/create-stripe-account-link.js
 
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
