@@ -1,0 +1,13 @@
+{
+  "name": "localmente-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vercel functions for Localmente app",
+  "main": "api/create-payment-intent.js",
+  "scripts": {
+    "start": "vercel dev"
+  },
+  "dependencies": {
+    "stripe": "^15.11.0"
+  }
+}
