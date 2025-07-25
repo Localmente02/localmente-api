@@ -3,6 +3,14 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 module.exports = async (req, res) => {
+  // <<< INIZIO MODIFICA: GESTIONE RICHIESTE OPTIONS (PER CORS PREFLIGHT) >>>
+  if (req.method === 'OPTIONS') {
+    // Rispondi OK alla richiesta OPTIONS, il browser poi procederà con la richiesta POST
+    res.status(200).end();
+    return;
+  }
+  // <<< FINE MODIFICA >>>
+
   if (req.method === 'POST') {
     try {
       const { accountId, refreshUrl, returnUrl, email, businessName } = req.body;
