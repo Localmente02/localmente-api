@@ -7,10 +7,10 @@
     "start": "vercel dev"
   },
   "dependencies": {
-    "firebase-admin": "^11.11.0",  // QUESTA È LA TUA NUOVA FARINA (che risolve l'errore!)
-    "stripe": "^15.11.0"           // LA TUA VERSIONE DI STRIPE (più nuova, meglio!)
+    "firebase-admin": "^11.11.0",
+    "stripe": "^15.11.0"
   },
   "engines": {
-    "node": "18.x" // Questo dice a Vercel quale "motore" Node.js usare, è buona pratica
+    "node": "18.x"
   }
 }
