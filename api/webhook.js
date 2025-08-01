@@ -55,23 +55,19 @@ if (!admin.apps.length) {
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
 // >>> NUOVA CONFIGURAZIONE PER VERCEL: DISABILITA IL PARSING AUTOMATICO DEL BODY <<<
-// Questo è CRUCIALE per Stripe webhooks, perché Stripe ha bisogno del 'raw' body
-// per verificare la firma. Vercel lo parserebbe automaticamente in JSON.
 export const config = {
   api: {
-    bodyParser: false, // Disabilita il body parser predefinito di Vercel per questo endpoint
+    bodyParser: false,
   },
 };
 // >>> FINE NUOVA CONFIGURAZIONE <<<
 
 
 module.exports = async (req, res) => {
-  // QUESTO È IL NOSTRO MESSAGGIO DI TEST PER VEDERE SE LA FUNZIONE PARTE!
   console.log("----- Webhook function started! -----");
   console.log("Method:", req.method);
-  console.log("Headers:", req.headers); // Logga gli header per debugging
+  console.log("Headers:", req.headers);
 
-  // Gestione delle richieste OPTIONS per CORS preflight
   if (req.method === 'OPTIONS') {
     console.log("OPTIONS request received.");
     res.status(200).end();
@@ -81,57 +77,68 @@ module.exports = async (req, res) => {
   if (req.method === 'POST') {
     const sig = req.headers['stripe-signature'];
     
-    // >>> NUOVA LOGICA PER LEGGERE IL RAW BODY <<<
     let event;
-    let rawBody; // Variabile per contenere il corpo grezzo
+    let rawBody;
 
     try {
-      // Vercel, quando bodyParser è false, passa il body come stream.
-      // Dobbiamo leggerlo.
-      rawBody = await getRawBody(req);
-      console.log("Raw body read successful, length:", rawBody ? rawBody.length : 0);
+        rawBody = await getRawBody(req);
+        console.log("Raw body read successful, length:", rawBody ? rawBody.length : 0);
     } catch (error) {
-      console.error("Errore nel leggere il raw body dalla richiesta:", error.message);
-      return res.status(400).send(`Webhook Error: Failed to read raw body.`);
+        console.error("Errore nel leggere il raw body dalla richiesta:", error.message);
+        return res.status(400).send(`Webhook Error: Failed to read raw body.`);
     }
 
     try {
-      // Usiamo il 'rawBody' per la verifica della firma
-      // Assicurati che `rawBody` sia un Buffer o stringa, non undefined o null
       event = stripe.webhooks.constructEvent(rawBody, sig, endpointSecret);
       console.log(`✅ Webhook signature verified. Event type: ${event.type}`);
     } catch (err) {
       console.error(`❌ Errore nella verifica della firma del webhook: ${err.message}`);
-      // Logga il body per debugging se la firma fallisce (NON FARE IN PRODUZIONE)
       console.error("Raw Body (if available):", rawBody ? rawBody.toString('utf8').substring(0, 500) + '...' : 'Not available');
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // Gestisci i diversi tipi di eventi Stripe
     switch (event.type) {
       case 'payment_intent.succeeded':
         const paymentIntentSucceeded = event.data.object;
         console.log(`✅ PaymentIntent succeeded: ${paymentIntentSucceeded.id}`);
         
         const orderIdFromMetadata = paymentIntentSucceeded.metadata?.orderId;
-        const vendorIdFromMetadata = paymentIntentSucceeded.metadata?.vendorId;
+        const vendorIdFromMetadata = paymentIntentSucceeded.metadata?.vendorId; // Questo è il Firebase UID del venditore
 
-        if (orderIdFromMetadata && vendorIdFromMetadata && db) {
+        if (orderIdFromMetadata && db) { // Non controlliamo vendorId qui, perché l'ordine principale può essere multi-venditore
           try {
-            await db.collection('vendor_orders').doc(vendorIdFromMetadata).collection('orders').doc(orderIdFromMetadata).set({
-              status: 'Pagato',
+            // >>> AGGIORNAMENTO 1: Aggiorna l'ordine PRINCIPALE nella collezione 'orders' <<<
+            await db.collection('orders').doc(orderIdFromMetadata).set({
+              status: 'Pagato', // O lo stato che decidi per l'ordine principale appena pagato
               paymentStatus: 'Completato',
               updatedAt: admin.firestore.FieldValue.serverTimestamp(),
               stripePaymentIntentId: paymentIntentSucceeded.id,
               amountPaid: paymentIntentSucceeded.amount,
               currencyPaid: paymentIntentSucceeded.currency
             }, { merge: true });
-            console.log(`Firestore: Ordine ${orderIdFromMetadata} aggiornato/creato come 'Pagato'.`);
+            console.log(`Firestore: Ordine PRINCIPALE ${orderIdFromMetadata} aggiornato/creato come 'Pagato'.`);
+
+            // >>> AGGIORNAMENTO 2: Aggiorna il SOTTO-ORDINE nella collezione 'vendor_orders' <<<
+            // Questo lo facciamo SOLO SE il vendorId è presente nei metadata (per ordini di singoli venditori)
+            if (vendorIdFromMetadata) {
+              await db.collection('vendor_orders').doc(vendorIdFromMetadata).collection('orders').doc(orderIdFromMetadata).set({
+                status: 'Pagato', // Anche qui, puoi usare uno stato specifico per il venditore
+                paymentStatus: 'Completato',
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                stripePaymentIntentId: paymentIntentSucceeded.id,
+                amountPaid: paymentIntentSucceeded.amount,
+                currencyPaid: paymentIntentSucceeded.currency
+              }, { merge: true });
+              console.log(`Firestore: Sotto-ordine ${orderIdFromMetadata} per venditore ${vendorIdFromMetadata} aggiornato/creato come 'Pagato'.`);
+            } else {
+                console.warn(`Webhook: PaymentIntent riuscito ma vendorId non trovato nei metadata per il sotto-ordine. L'ordine principale è stato aggiornato.`);
+            }
+
           } catch (updateError) {
-            console.error(`Firestore: Errore nell'aggiornare l'ordine ${orderIdFromMetadata}:`, updateError.message);
+            console.error(`Firestore: Errore critico nell'aggiornare gli ordini (principale o sotto-ordine) ${orderIdFromMetadata}:`, updateError.message);
           }
         } else {
-          console.warn(`Webhook: PaymentIntent riuscito ma OrderId o VendorId non trovati nei metadata o DB non inizializzato per l'ID ${paymentIntentSucceeded.id}.`);
+          console.warn(`Webhook: PaymentIntent riuscito ma OrderId non trovato nei metadata o DB non inizializzato per l'ID ${paymentIntentSucceeded.id}.`);
         }
         break;
 
@@ -142,19 +149,37 @@ module.exports = async (req, res) => {
         const orderIdFailed = paymentIntentFailed.metadata?.orderId;
         const vendorIdFailed = paymentIntentFailed.metadata?.vendorId;
 
-        if (orderIdFailed && vendorIdFailed && db) {
+        if (orderIdFailed && db) { // Anche qui, non controlliamo vendorId per l'ordine principale
           try {
-            await db.collection('vendor_orders').doc(vendorIdFailed).collection('orders').doc(orderIdFailed).set({
+            // >>> AGGIORNAMENTO 1: Aggiorna l'ordine PRINCIPALE nella collezione 'orders' <<<
+            await db.collection('orders').doc(orderIdFailed).set({
               status: 'Pagamento Fallito',
               paymentStatus: 'Fallito',
               updatedAt: admin.firestore.FieldValue.serverTimestamp(),
               stripePaymentIntentId: paymentIntentFailed.id,
               lastPaymentError: paymentIntentFailed.last_payment_error?.message || 'Errore sconosciuto'
             }, { merge: true });
-            console.log(`Firestore: Ordine ${orderIdFailed} aggiornato/creato come 'Pagamento Fallito'.`);
+            console.log(`Firestore: Ordine PRINCIPALE ${orderIdFailed} aggiornato/creato come 'Pagamento Fallito'.`);
+
+            // >>> AGGIORNAMENTO 2: Aggiorna il SOTTO-ORDINE nella collezione 'vendor_orders' <<<
+            if (vendorIdFailed) {
+              await db.collection('vendor_orders').doc(vendorIdFailed).collection('orders').doc(orderIdFailed).set({
+                status: 'Pagamento Fallito',
+                paymentStatus: 'Fallito',
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                stripePaymentIntentId: paymentIntentFailed.id,
+                lastPaymentError: paymentIntentFailed.last_payment_error?.message || 'Errore sconosciuto'
+              }, { merge: true });
+              console.log(`Firestore: Sotto-ordine ${orderIdFailed} per venditore ${vendorIdFailed} aggiornato/creato come 'Pagamento Fallito'.`);
+            } else {
+                console.warn(`Webhook: PaymentIntent fallito ma vendorId non trovato nei metadata per il sotto-ordine. L'ordine principale è stato aggiornato.`);
+            }
+
           } catch (updateError) {
-            console.error(`Firestore: Errore nell'aggiornare l'ordine fallito ${orderIdFailed}:`, updateError.message);
+            console.error(`Firestore: Errore critico nell'aggiornare gli ordini falliti (principale o sotto-ordine) ${orderIdFailed}:`, updateError.message);
           }
+        } else {
+          console.warn(`Webhook: PaymentIntent fallito ma OrderId non trovato nei metadata o DB non inizializzato per l'ID ${paymentIntentFailed.id}.`);
         }
         break;
 
@@ -162,7 +187,6 @@ module.exports = async (req, res) => {
         console.log(`Unhandled event type ${event.type} received.`);
     }
 
-    // Invia una risposta di successo a Stripe (obbligatorio)
     res.status(200).json({ received: true });
   } else {
     res.setHeader('Allow', 'POST, OPTIONS');
@@ -170,8 +194,6 @@ module.exports = async (req, res) => {
   }
 };
 
-// Funzione helper per leggere il raw body da una richiesta Node.js stream
-// >>> QUESTA FUNZIONE È STATA AGGIORNATA <<<
 function getRawBody(req) {
     return new Promise((resolve, reject) => {
         const chunks = [];
