@@ -54,6 +54,17 @@ if (!admin.apps.length) {
 // Questo è il segreto del webhook, IMPORTANTISSIMO per la sicurezza!
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
+// >>> NUOVA CONFIGURAZIONE PER VERCEL: DISABILITA IL PARSING AUTOMATICO DEL BODY <<<
+// Questo è CRUCIALE per Stripe webhooks, perché Stripe ha bisogno del 'raw' body
+// per verificare la firma. Vercel lo parserebbe automaticamente in JSON.
+export const config = {
+  api: {
+    bodyParser: false, // Disabilita il body parser predefinito di Vercel per questo endpoint
+  },
+};
+// >>> FINE NUOVA CONFIGURAZIONE <<<
+
+
 module.exports = async (req, res) => {
   // QUESTO È IL NOSTRO MESSAGGIO DI TEST PER VEDERE SE LA FUNZIONE PARTE!
   console.log("----- Webhook function started! -----");
@@ -70,30 +81,19 @@ module.exports = async (req, res) => {
 
     let event;
 
-    // Per Vercel, req.body è già parsato come JSON. Per la verifica del webhook,
-    // Stripe ha bisogno del raw body. Vercel fornisce `req.rawBody` solo
-    // se è configurato un middleware specifico (o se non parsiamo il body).
-    // Per un setup standard di Vercel, `req.body` è il JSON parsato.
-    // L'errore `No raw body received` o `Webhook Error: No signature` può derivare da questo.
-    // Dobbiamo assicurarci di avere il raw body.
-
-    // Aggiungi questo per tentare di ottenere il raw body se non è già presente.
-    // A volte Vercel può fornire il raw body in un campo specifico se il content-type è application/json
-    // O è necessario disabilitare il body-parser predefinito di Vercel per questo percorso.
-    // Per ora, tentiamo di leggere direttamente. Se Stripe dà errore sulla firma,
-    // sarà il problema successivo da affrontare.
-
-    // Il metodo più robusto per Vercel è assicurarsi che il body non sia parsato automaticamente
-    // Per esempio, configurando il file `vercel.json` o usando un approccio diverso.
-    // Per il momento, assumiamo che `req.body` sia il payload JSON ricevuto, e per il `constructEvent`
-    // lo useremo così, sapendo che potrebbe fallire se la firma non può essere verificata correttamente senza raw body.
+    // Quando bodyParser è false, req.body è uno stream. Dobbiamo leggerlo.
+    // Stripe ha un helper per questo, ma possiamo farlo manualmente.
+    let rawBodyBuffer;
+    try {
+        rawBodyBuffer = await getRawBody(req);
+    } catch (error) {
+        console.error("Errore nel leggere il raw body:", error.message);
+        return res.status(400).send(`Webhook Error: Raw body read failed.`);
+    }
 
     try {
-      // Se req.rawBody non è definito (comune in Vercel), Stripe può non verificare la firma.
-      // Tentiamo con req.body. Questa parte è la più "sensibile" per la sicurezza.
-      // Se si vuole la massima sicurezza, Stripe raccomanda di non parsare il body prima.
-      // Per il test, ci concentriamo sulla ricezione e logging.
-      event = stripe.webhooks.constructEvent(req.rawBody || JSON.stringify(req.body), sig, endpointSecret);
+      // Usiamo rawBodyBuffer per la verifica della firma
+      event = stripe.webhooks.constructEvent(rawBodyBuffer, sig, endpointSecret);
     } catch (err) {
       console.error(`❌ Errore nella verifica della firma del webhook: ${err.message}`);
       // Un errore comune qui è "No raw body received" o "Invalid signature".
@@ -163,3 +163,20 @@ module.exports = async (req, res) => {
     res.status(405).end('Method Not Allowed');
   }
 };
+
+// Funzione helper per leggere il raw body da una richiesta Node.js stream
+// Necessario quando bodyParser: false è abilitato.
+function getRawBody(req) {
+    return new Promise((resolve, reject) => {
+        let bodyBuffer = [];
+        req.on('data', chunk => {
+            bodyBuffer.push(chunk);
+        });
+        req.on('end', () => {
+            resolve(Buffer.concat(bodyBuffer));
+        });
+        req.on('error', err => {
+            reject(err);
+        });
+    });
+}
