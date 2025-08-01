@@ -68,6 +68,8 @@ export const config = {
 module.exports = async (req, res) => {
   // QUESTO È IL NOSTRO MESSAGGIO DI TEST PER VEDERE SE LA FUNZIONE PARTE!
   console.log("----- Webhook function started! -----");
+  console.log("Method:", req.method);
+  console.log("Headers:", req.headers); // Logga gli header per debugging
 
   // Gestione delle richieste OPTIONS per CORS preflight
   if (req.method === 'OPTIONS') {
@@ -78,26 +80,30 @@ module.exports = async (req, res) => {
 
   if (req.method === 'POST') {
     const sig = req.headers['stripe-signature'];
-
+    
+    // >>> NUOVA LOGICA PER LEGGERE IL RAW BODY <<<
     let event;
+    let rawBody; // Variabile per contenere il corpo grezzo
 
-    // Quando bodyParser è false, req.body è uno stream. Dobbiamo leggerlo.
-    // Stripe ha un helper per questo, ma possiamo farlo manualmente.
-    let rawBodyBuffer;
     try {
-        rawBodyBuffer = await getRawBody(req);
+      // Vercel, quando bodyParser è false, passa il body come stream.
+      // Dobbiamo leggerlo.
+      rawBody = await getRawBody(req);
+      console.log("Raw body read successful, length:", rawBody ? rawBody.length : 0);
     } catch (error) {
-        console.error("Errore nel leggere il raw body:", error.message);
-        return res.status(400).send(`Webhook Error: Raw body read failed.`);
+      console.error("Errore nel leggere il raw body dalla richiesta:", error.message);
+      return res.status(400).send(`Webhook Error: Failed to read raw body.`);
     }
 
     try {
-      // Usiamo rawBodyBuffer per la verifica della firma
-      event = stripe.webhooks.constructEvent(rawBodyBuffer, sig, endpointSecret);
+      // Usiamo il 'rawBody' per la verifica della firma
+      // Assicurati che `rawBody` sia un Buffer o stringa, non undefined o null
+      event = stripe.webhooks.constructEvent(rawBody, sig, endpointSecret);
+      console.log(`✅ Webhook signature verified. Event type: ${event.type}`);
     } catch (err) {
       console.error(`❌ Errore nella verifica della firma del webhook: ${err.message}`);
-      // Un errore comune qui è "No raw body received" o "Invalid signature".
-      // Se accade, la funzione comunque risponde con 400.
+      // Logga il body per debugging se la firma fallisce (NON FARE IN PRODUZIONE)
+      console.error("Raw Body (if available):", rawBody ? rawBody.toString('utf8').substring(0, 500) + '...' : 'Not available');
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
@@ -112,7 +118,6 @@ module.exports = async (req, res) => {
 
         if (orderIdFromMetadata && vendorIdFromMetadata && db) {
           try {
-            // >>> QUI LA MODIFICA: DA .update A .set({ merge: true }) <<<
             await db.collection('vendor_orders').doc(vendorIdFromMetadata).collection('orders').doc(orderIdFromMetadata).set({
               status: 'Pagato',
               paymentStatus: 'Completato',
@@ -120,7 +125,7 @@ module.exports = async (req, res) => {
               stripePaymentIntentId: paymentIntentSucceeded.id,
               amountPaid: paymentIntentSucceeded.amount,
               currencyPaid: paymentIntentSucceeded.currency
-            }, { merge: true }); // Aggiunto merge: true
+            }, { merge: true });
             console.log(`Firestore: Ordine ${orderIdFromMetadata} aggiornato/creato come 'Pagato'.`);
           } catch (updateError) {
             console.error(`Firestore: Errore nell'aggiornare l'ordine ${orderIdFromMetadata}:`, updateError.message);
@@ -139,14 +144,13 @@ module.exports = async (req, res) => {
 
         if (orderIdFailed && vendorIdFailed && db) {
           try {
-            // >>> QUI LA MODIFICA: DA .update A .set({ merge: true }) <<<
             await db.collection('vendor_orders').doc(vendorIdFailed).collection('orders').doc(orderIdFailed).set({
               status: 'Pagamento Fallito',
               paymentStatus: 'Fallito',
               updatedAt: admin.firestore.FieldValue.serverTimestamp(),
               stripePaymentIntentId: paymentIntentFailed.id,
               lastPaymentError: paymentIntentFailed.last_payment_error?.message || 'Errore sconosciuto'
-            }, { merge: true }); // Aggiunto merge: true
+            }, { merge: true });
             console.log(`Firestore: Ordine ${orderIdFailed} aggiornato/creato come 'Pagamento Fallito'.`);
           } catch (updateError) {
             console.error(`Firestore: Errore nell'aggiornare l'ordine fallito ${orderIdFailed}:`, updateError.message);
@@ -167,17 +171,17 @@ module.exports = async (req, res) => {
 };
 
 // Funzione helper per leggere il raw body da una richiesta Node.js stream
-// Necessario quando bodyParser: false è abilitato.
+// >>> QUESTA FUNZIONE È STATA AGGIORNATA <<<
 function getRawBody(req) {
     return new Promise((resolve, reject) => {
-        let bodyBuffer = [];
-        req.on('data', chunk => {
-            bodyBuffer.push(chunk);
+        const chunks = [];
+        req.on('data', (chunk) => {
+            chunks.push(chunk);
         });
         req.on('end', () => {
-            resolve(Buffer.concat(bodyBuffer));
+            resolve(Buffer.concat(chunks));
         });
-        req.on('error', err => {
+        req.on('error', (err) => {
             reject(err);
         });
     });
