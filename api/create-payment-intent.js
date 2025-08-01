@@ -5,7 +5,8 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
     try {
-      const { amount, currency, description, stripeAccountId, applicationFeeAmount } = req.body;
+      // >>> MODIFICATO: Includi 'metadata' tra i parametri ricevuti <<<
+      const { amount, currency, description, stripeAccountId, applicationFeeAmount, metadata } = req.body;
 
       if (!amount || !currency) {
         return res.status(400).json({ error: 'Missing amount or currency' });
@@ -16,6 +17,8 @@ module.exports = async (req, res) => {
         currency: currency,
         payment_method_types: ['card'],
         description: description || 'No description provided',
+        // >>> NUOVO: Passa il metadata a Stripe <<<
+        metadata: metadata, // Passa il metadata ricevuto direttamente a Stripe
       };
 
       // Gestione di Stripe Connect per marketplace
