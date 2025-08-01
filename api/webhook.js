@@ -112,15 +112,16 @@ module.exports = async (req, res) => {
 
         if (orderIdFromMetadata && vendorIdFromMetadata && db) {
           try {
-            await db.collection('vendor_orders').doc(vendorIdFromMetadata).collection('orders').doc(orderIdFromMetadata).update({
+            // >>> QUI LA MODIFICA: DA .update A .set({ merge: true }) <<<
+            await db.collection('vendor_orders').doc(vendorIdFromMetadata).collection('orders').doc(orderIdFromMetadata).set({
               status: 'Pagato',
               paymentStatus: 'Completato',
               updatedAt: admin.firestore.FieldValue.serverTimestamp(),
               stripePaymentIntentId: paymentIntentSucceeded.id,
               amountPaid: paymentIntentSucceeded.amount,
               currencyPaid: paymentIntentSucceeded.currency
-            });
-            console.log(`Firestore: Ordine ${orderIdFromMetadata} aggiornato a 'Pagato'.`);
+            }, { merge: true }); // Aggiunto merge: true
+            console.log(`Firestore: Ordine ${orderIdFromMetadata} aggiornato/creato come 'Pagato'.`);
           } catch (updateError) {
             console.error(`Firestore: Errore nell'aggiornare l'ordine ${orderIdFromMetadata}:`, updateError.message);
           }
@@ -138,14 +139,15 @@ module.exports = async (req, res) => {
 
         if (orderIdFailed && vendorIdFailed && db) {
           try {
-            await db.collection('vendor_orders').doc(vendorIdFailed).collection('orders').doc(orderIdFailed).update({
+            // >>> QUI LA MODIFICA: DA .update A .set({ merge: true }) <<<
+            await db.collection('vendor_orders').doc(vendorIdFailed).collection('orders').doc(orderIdFailed).set({
               status: 'Pagamento Fallito',
               paymentStatus: 'Fallito',
               updatedAt: admin.firestore.FieldValue.serverTimestamp(),
               stripePaymentIntentId: paymentIntentFailed.id,
               lastPaymentError: paymentIntentFailed.last_payment_error?.message || 'Errore sconosciuto'
-            });
-            console.log(`Firestore: Ordine ${orderIdFailed} aggiornato a 'Pagamento Fallito'.`);
+            }, { merge: true }); // Aggiunto merge: true
+            console.log(`Firestore: Ordine ${orderIdFailed} aggiornato/creato come 'Pagamento Fallito'.`);
           } catch (updateError) {
             console.error(`Firestore: Errore nell'aggiornare l'ordine fallito ${orderIdFailed}:`, updateError.message);
           }
