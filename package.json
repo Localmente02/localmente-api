@@ -1,13 +1,16 @@
 {
   "name": "localmente-api",
   "version": "1.0.0",
-  "private": true,
-  "description": "Vercel functions for Localmente app",
-  "main": "api/create-payment-intent.js",
+  "description": "API functions for Localmente project",
+  "main": "api/index.js",
   "scripts": {
     "start": "vercel dev"
   },
   "dependencies": {
-    "stripe": "^15.11.0"
+    "firebase-admin": "^11.11.0",  // QUESTA È LA TUA NUOVA FARINA (che risolve l'errore!)
+    "stripe": "^15.11.0"           // LA TUA VERSIONE DI STRIPE (più nuova, meglio!)
+  },
+  "engines": {
+    "node": "18.x" // Questo dice a Vercel quale "motore" Node.js usare, è buona pratica
   }
 }
