@@ -8,5 +8,11 @@
         { "key": "Access-Control-Allow-Headers", "value": "X-Requested-With, Content-Type, Authorization" }
       ]
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/clean_expired_offers",
+      "schedule": "0 0 * * *"
+    }
   ]
 }
