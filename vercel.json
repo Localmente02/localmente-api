@@ -12,7 +12,7 @@
   "crons": [
     {
       "path": "/api/clean_expired_offers",
-      "schedule": "0 0 * * *"
+      "schedule": "*/2 * * * *"
     }
   ]
 }
