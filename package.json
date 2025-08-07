@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "API functions for Localmente project",
   "main": "api/index.js",
-  "type": "module", 
+  "type": "module",
   "scripts": {
     "start": "vercel dev"
   },
@@ -11,9 +11,9 @@
     "firebase-admin": "^11.11.0",
     "imagekit": "^4.1.4",
     "stripe": "^15.11.0",
-    "@google/generative-ai": "^0.2.0" 
+    "@google/generative-ai": "^0.2.0"
   },
   "engines": {
-    "node": "18.x"
+    "node": "20.x"
   }
 }
