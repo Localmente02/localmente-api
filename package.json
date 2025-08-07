@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "API functions for Localmente project",
   "main": "gift-recommender.js",
-  "type": "module",
+  
   "scripts": {
     "start": "vercel dev"
   },
@@ -14,6 +14,6 @@
     "@google/generative-ai": "^0.2.0"
   },
   "engines": {
-    "node": "18.x"
+    "node": "20.x"
   }
 }
