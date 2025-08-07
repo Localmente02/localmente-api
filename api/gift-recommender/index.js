@@ -1,13 +1,9 @@
-// Questa è una Vercel Serverless Function.
-// Riceve le preferenze utente, recupera prodotti da Firestore,
-// interroga l'AI di Google Gemini e restituisce suggerimenti regalo.
 
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// Inizializza Firebase Admin SDK solo una volta per evitare errori di re-inizializzazione.
-// `global.firebaseAdminApp` è un pattern comune per le funzioni serverless su Vercel.
+
 let db;
 if (!global.firebaseAdminApp) {
   try {
@@ -30,25 +26,24 @@ db = getFirestore(global.firebaseAdminApp);
 
 
 export default async function (req, res) {
-  // Configurazione CORS (Cross-Origin Resource Sharing)
-  // Essenziale per permettere alla tua app Flutter (che gira su un dominio diverso) di chiamare questa API.
+
   res.setHeader('Access-Control-Allow-Origin', '*'); // Permette richieste da qualsiasi origine (per sviluppo)
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS'); // Metodi HTTP permessi
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type'); // Header permessi
 
-  // Gestisce le richieste OPTIONS (chiamate "pre-flight") che i browser inviano prima delle richieste POST/GET reali.
+  
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
   }
 
-  // Assicurati che la richiesta sia di tipo POST.
+ 
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Metodo non permesso. Si accettano solo richieste POST.' });
   }
 
   try {
-    // Estrai le preferenze dell'utente e la posizione dalla richiesta (inviate dalla tua app Flutter).
+   
     const { userPreferences, userCurrentLocation } = req.body;
 
     // Validazione base degli input
