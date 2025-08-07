@@ -16,7 +16,7 @@
     "api/webhook.js": {
       "runtime": "nodejs20.x"
     },
-    "api/gift-recommender/index.js": {
+    "api/gift-recommender.js": {
       "runtime": "nodejs20.x"
     }
   },
@@ -39,28 +39,8 @@
   ],
   "rewrites": [
     {
-      "source": "/api/clean_expired_offers",
-      "destination": "/api/clean_expired_offers.js"
-    },
-    {
-      "source": "/api/create-payment-intent",
-      "destination": "/api/create-payment-intent.js"
-    },
-    {
-      "source": "/api/create-stripe-account-link",
-      "destination": "/api/create-stripe-account-link.js"
-    },
-    {
-      "source": "/api/get-stripe-balance-and-transactions",
-      "destination": "/api/get-stripe-balance-and-transactions.js"
-    },
-    {
-      "source": "/api/webhook",
-      "destination": "/api/webhook.js"
-    },
-    {
-      "source": "/api/gift-recommender",
-      "destination": "/api/gift-recommender/index.js"
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
     }
   ]
 }
