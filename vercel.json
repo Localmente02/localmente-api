@@ -1,4 +1,25 @@
 {
+  "version": 2,
+  "functions": {
+    "api/clean_expired_offers.js": {
+      "runtime": "nodejs20.x"
+    },
+    "api/create-payment-intent.js": {
+      "runtime": "nodejs20.x"
+    },
+    "api/create-stripe-account-link.js": {
+      "runtime": "nodejs20.x"
+    },
+    "api/get-stripe-balance-and-transactions.js": {
+      "runtime": "nodejs20.x"
+    },
+    "api/webhook.js": {
+      "runtime": "nodejs20.x"
+    },
+    "api/gift-recommender/index.js": {
+      "runtime": "nodejs20.x"
+    }
+  },
   "headers": [
     {
       "source": "/api/(.*)",
@@ -14,6 +35,32 @@
     {
       "path": "/api/clean_expired_offers",
       "schedule": "*/2 * * * *"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/clean_expired_offers",
+      "destination": "/api/clean_expired_offers.js"
+    },
+    {
+      "source": "/api/create-payment-intent",
+      "destination": "/api/create-payment-intent.js"
+    },
+    {
+      "source": "/api/create-stripe-account-link",
+      "destination": "/api/create-stripe-account-link.js"
+    },
+    {
+      "source": "/api/get-stripe-balance-and-transactions",
+      "destination": "/api/get-stripe-balance-and-transactions.js"
+    },
+    {
+      "source": "/api/webhook",
+      "destination": "/api/webhook.js"
+    },
+    {
+      "source": "/api/gift-recommender",
+      "destination": "/api/gift-recommender/index.js"
     }
   ]
 }
