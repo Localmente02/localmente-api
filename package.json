@@ -3,13 +3,15 @@
   "version": "1.0.0",
   "description": "API functions for Localmente project",
   "main": "api/index.js",
+  "type": "module", // <--- AGGIUNGI QUESTA RIGA! Fondamentale per 'import'
   "scripts": {
     "start": "vercel dev"
   },
   "dependencies": {
     "firebase-admin": "^11.11.0",
     "imagekit": "^4.1.4",
-    "stripe": "^15.11.0"
+    "stripe": "^15.11.0",
+    "@google/generative-ai": "^0.2.0" // <--- AGGIUNGI QUESTA LIBRERIA!
   },
   "engines": {
     "node": "18.x"
