@@ -1,4 +1,3 @@
-
 // Questo file è una Vercel Serverless Function.
 // Riceve le preferenze utente, recupera prodotti da Firestore,
 // interroga l'AI di Google Gemini e restituisce suggerimenti regalo.
