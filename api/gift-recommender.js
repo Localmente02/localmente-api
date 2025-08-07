@@ -1,13 +1,8 @@
-// Questa è una Vercel Serverless Function.
-// Riceve le preferenze utente, recupera prodotti da Firestore,
-// interroga l'AI di Google Gemini e restituisce suggerimenti regalo.
-
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// Inizializza Firebase Admin SDK solo una volta per evitare errori di re-inizializzazione.
-// `global.firebaseAdminApp` è un pattern comune per le funzioni serverless su Vercel.
+
 let db;
 if (!global.firebaseAdminApp) {
   try {
@@ -28,7 +23,7 @@ db = getFirestore(global.firebaseAdminApp);
 
 
 export default async function (req, res) {
-  // Configurazione CORS
+ 
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -49,8 +44,6 @@ export default async function (req, res) {
       return res.status(400).json({ error: 'Mancano dati essenziali: userPreferences o CAP della posizione attuale.' });
     }
 
-    // ******************** PRIMA MODIFICA CHIRURGICA ********************
-    // Ho cambiato `note_aggiuntive` in `noteAggiuntive` per corrispondere a ciò che l'app Flutter invia.
     const {
       interessi,
       eta,
@@ -182,8 +175,7 @@ Esempio del formato di output DESIDERATO (SOLO L'ARRAY JSON):
         return null;
     }).filter(Boolean);
     
-    // ******************** SECONDA MODIFICA CHIRURGICA ********************
-    // Restituisco l'array direttamente, come si aspetta l'app Flutter.
+
     res.status(200).json(finalSuggestions);
 
   } catch (error) {
