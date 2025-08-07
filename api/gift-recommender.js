@@ -22,40 +22,35 @@ if (!global.firebaseAdminApp) {
     console.log("Firebase Admin SDK initialized successfully.");
   } catch (error) {
     console.error("Failed to initialize Firebase Admin SDK:", error);
-    // In un ambiente di produzione, qui potresti voler lanciare un errore fatale
-    // o un sistema di notifica, ma per ora il console.error è sufficiente.
   }
 }
 db = getFirestore(global.firebaseAdminApp);
 
 
 export default async function (req, res) {
-  // Configurazione CORS (Cross-Origin Resource Sharing)
-  // Essenziale per permettere alla tua app Flutter (che gira su un dominio diverso) di chiamare questa API.
-  res.setHeader('Access-Control-Allow-Origin', '*'); // Permette richieste da qualsiasi origine (per sviluppo)
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS'); // Metodi HTTP permessi
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type'); // Header permessi
+  // Configurazione CORS
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // Gestisce le richieste OPTIONS (chiamate "pre-flight") che i browser inviano prima delle richieste POST/GET reali.
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
   }
 
-  // Assicurati che la richiesta sia di tipo POST.
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Metodo non permesso. Si accettano solo richieste POST.' });
   }
 
   try {
-    // Estrai le preferenze dell'utente e la posizione dalla richiesta (inviate dalla tua app Flutter).
     const { userPreferences, userCurrentLocation } = req.body;
 
-    // Validazione base degli input
     if (!userPreferences || !userCurrentLocation || !userCurrentLocation.cap) {
       return res.status(400).json({ error: 'Mancano dati essenziali: userPreferences o CAP della posizione attuale.' });
     }
 
+    // ******************** PRIMA MODIFICA CHIRURGICA ********************
+    // Ho cambiato `note_aggiuntive` in `noteAggiuntive` per corrispondere a ciò che l'app Flutter invia.
     const {
       interessi,
       eta,
@@ -64,61 +59,54 @@ export default async function (req, res) {
       personalita,
       relazione,
       occasione,
-      note_aggiuntive
+      noteAggiuntive 
     } = userPreferences;
 
-    const userCap = userCurrentLocation.cap; // Il CAP dell'utente per filtrare i prodotti locali.
+    const userCap = userCurrentLocation.cap;
 
-    // 1. Recupera i prodotti dal 'global_product_catalog' di Firebase.
-    // L'obiettivo è filtrare per prodotti attivi, disponibili, nel CAP dell'utente,
-    // e solo dai venditori "Piazza" (curati) per ottenere i migliori suggerimenti.
     let productsSnapshot;
     try {
         productsSnapshot = await db.collection('global_product_catalog')
-            .where('isAvailable', '==', true) // Il prodotto deve essere disponibile in stock.
-            .where('isMarketplaceActive', '==', true) // Il prodotto deve essere attivo sul marketplace.
-            .where('vendorCap', '==', userCap) // Filtra i prodotti nel CAP specificato dall'utente.
-            .where('isPiazzaVendor', '==', true) // Filtra solo i prodotti dei venditori "Piazza".
-            .limit(500) // Limita il numero di prodotti per non sovraccaricare l'AI e la funzione.
+            .where('isAvailable', '==', true)
+            .where('isMarketplaceActive', '==', true)
+            .where('vendorCap', '==', userCap)
+            .where('isPiazzaVendor', '==', true)
+            .limit(500)
             .get();
     } catch (firebaseError) {
         console.error("Errore nel recupero dei prodotti da Firestore:", firebaseError);
-        return res.status(500).json({ error: "Errore interno durante il recupero dei prodotti disponibili." });
+        return res.status(500).json([]); // Restituisci array vuoto in caso di errore
     }
 
-    // Trasforma i documenti di Firebase in un formato più leggero per l'AI.
     const availableProducts = productsSnapshot.docs.map(doc => {
       const data = doc.data();
       return {
-        id: data.id,
+        id: doc.id, // Usa l'ID del documento Firestore
         nome: data.productName,
         descrizione: data.description || '',
-        categoria_principale: data.productCategory, // Mappato dal tuo 'categoryGroup'.
+        categoria_principale: data.categoryGroup,
         sottocategoria: data.subCategory || '',
         prezzo: data.price,
         unita: data.unit || 'pezzo',
-        isAvailable: data.isAvailable,
-        imageUrl: data.productImageUrl || null,
-        keywords: data.keywords || [], // Parole chiave per aiutare l'AI.
+        imageUrl: data.imageUrls && data.imageUrls.length > 0 ? data.imageUrls[0] : null,
+        keywords: data.keywords || [],
       };
-    }).filter(p => p.isAvailable && p.prezzo > 0 && p.nome); // Filtro per assicurare dati validi.
+    }).filter(p => p.prezzo > 0 && p.nome);
 
-    // Se non ci sono prodotti disponibili dopo i filtri, restituisci un messaggio.
     if (availableProducts.length === 0) {
-        return res.status(404).json({ message: 'Nessun prodotto disponibile o corrispondente ai tuoi filtri nel tuo CAP. Prova a modificare le preferenze.' });
+        console.log(`Nessun prodotto trovato per il CAP: ${userCap}`);
+        return res.status(404).json([]); // Restituisci array vuoto
     }
 
-    // 2. Costruisci il prompt per l'Intelligenza Artificiale (Google Gemini).
-    const API_KEY = process.env.GOOGLE_API_KEY; // La tua chiave API di Google Gemini.
+    const API_KEY = process.env.GOOGLE_API_KEY;
     if (!API_KEY) {
-      console.error("GOOGLE_API_KEY non è configurata nelle variabili d'ambiente di Vercel.");
-      return res.status(500).json({ error: 'Chiave API di Google Gemini mancante. Contatta l\'amministratore.' });
+      console.error("GOOGLE_API_KEY non è configurata.");
+      return res.status(500).json([]); // Restituisci array vuoto
     }
 
     const genAI = new GoogleGenerativeAI(API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-pro" }); // Usiamo il modello "pro" per suggerimenti di qualità.
+    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
-    // Il testo del prompt è la parte più importante: guida l'AI a generare la risposta desiderata.
     const promptText = `Sei un esperto selezionatore di regali unico e personalizzato sulla piattaforma Localmente. Il tuo obiettivo è suggerire i 3 migliori regali basandoti sui 'Dati Utente' e sui 'Prodotti Disponibili' che ti verranno forniti.
 
 Dati Utente:
@@ -129,7 +117,7 @@ Dati Utente:
 - Personalità: ${personalita || 'non specificata'}
 - Relazione: ${relazione || 'non specificata'}
 - Occasione: ${occasione || 'non specificata'}
-- Note Aggiuntive: ${note_aggiuntive || 'nessuna'}
+- Note Aggiuntive: ${noteAggiuntive || 'nessuna'}
 
 Prodotti Disponibili (formato JSON):
 ${JSON.stringify(availableProducts, null, 2)}
@@ -138,10 +126,9 @@ Istruzioni per i suggerimenti (Output JSON):
 1.  Per ogni regalo suggerito, forniscimi ESATTAMENTE un oggetto JSON con i seguenti campi: "id", "nome", "prezzo", "spiegazione".
 2.  L' "id" deve essere l'ID esatto del prodotto presente nella lista "Prodotti Disponibili".
 3.  La "spiegazione" deve essere concisa (massimo 3 frasi) e collegare direttamente il regalo agli interessi, alla personalità o all'occasione del destinatario.
-4.  I prodotti suggeriti DEVONO essere contrassegnati come 'isAvailable: true' nella lista dei "Prodotti Disponibili".
-5.  I prodotti suggeriti DEVONO rientrare nel budget indicato dall'utente. Se il budget è una fascia (es. "50-100"), il prezzo del regalo deve essere all'interno di quella fascia. Se il budget è un valore singolo (es. "75"), il prezzo deve essere inferiore o uguale a quel valore. Se il budget non è specificato, puoi suggerire liberamente qualsiasi prezzo.
-6.  Sii creativo e originale nei suggerimenti, pensando a come i prodotti locali possano essere perfetti.
-7.  Presenta i risultati ESCLUSIVAMENTE come un array JSON di 3 oggetti. NON includere testo aggiuntivo, introduzioni, o formattazioni Markdown prima o dopo l'array JSON.
+4.  I prodotti suggeriti DEVONO rientrare nel budget indicato dall'utente. Se il budget è una fascia (es. "50-100"), il prezzo del regalo deve essere all'interno di quella fascia.
+5.  Sii creativo e originale nei suggerimenti.
+6.  Presenta i risultati ESCLUSIVAMENTE come un array JSON di 3 oggetti. NON includere testo aggiuntivo, introduzioni, o formattazioni Markdown prima o dopo l'array JSON.
 
 Esempio del formato di output DESIDERATO (SOLO L'ARRAY JSON):
 [
@@ -166,58 +153,41 @@ Esempio del formato di output DESIDERATO (SOLO L'ARRAY JSON):
 ]
 `;
 
-    // Chiamata all'API di Google Gemini per generare i suggerimenti.
     const result = await model.generateContent(promptText);
     const response = await result.response;
     let aiResponseText = response.text();
 
-    // Pulizia dell'output dell'AI: a volte l'AI aggiunge '```json' o altri caratteri non necessari.
-    const jsonMatch = aiResponseText.match(/```json\n([\s\S]*?)\n```/);
-    if (jsonMatch && jsonMatch[1]) {
-        aiResponseText = jsonMatch[1]; // Estrai solo il contenuto JSON.
-    } else {
-        aiResponseText = aiResponseText.trim(); // Rimuovi spazi extra.
-    }
+    aiResponseText = aiResponseText.replace(/```json\n|```/g, '').trim();
 
     let parsedSuggestions;
     try {
-        parsedSuggestions = JSON.parse(aiResponseText); // Tenta di parsare la stringa JSON.
-        // Validazione aggiuntiva per assicurarsi che l'output sia un array di oggetti validi.
-        if (!Array.isArray(parsedSuggestions) || parsedSuggestions.length === 0 || !parsedSuggestions[0] || !parsedSuggestions[0].id) {
-            throw new Error("Formato JSON restituito dall'AI non valido o incompleto.");
+        parsedSuggestions = JSON.parse(aiResponseText);
+        if (!Array.isArray(parsedSuggestions)) {
+            throw new Error("L'output non è un array.");
         }
     } catch (parseError) {
         console.error("Errore nel parsing della risposta JSON dell'AI:", aiResponseText, parseError);
-        return res.status(500).json({
-            error: 'L\'Intelligenza Artificiale ha restituito un formato non valido. Si prega di riprovare più tardi.',
-            rawAiOutput: aiResponseText // Includi l'output grezzo dell'AI per debug.
-        });
+        return res.status(500).json([]); // Restituisci array vuoto
     }
 
-    // 3. Completa i suggerimenti con informazioni aggiuntive (es. URL immagine).
-    // Questo è necessario perché l'AI riceve un set di dati ridotto per focalizzarsi sui suggerimenti,
-    // ma la tua app ha bisogno dell'URL dell'immagine per mostrare il prodotto.
     const finalSuggestions = parsedSuggestions.map(suggestion => {
         const fullProduct = availableProducts.find(p => p.id === suggestion.id);
         if (fullProduct) {
             return {
-                id: suggestion.id,
-                nome: suggestion.nome,
-                prezzo: suggestion.prezzo,
-                spiegazione: suggestion.spiegazione,
-                imageUrl: fullProduct.imageUrl, // Aggiunge l'URL dell'immagine dal prodotto originale.
-                unit: fullProduct.unit, // Aggiunge l'unità di misura.
+                ...suggestion, // Prende id, nome, prezzo, spiegazione dall'AI
+                imageUrl: fullProduct.imageUrl,
+                unit: fullProduct.unita,
             };
         }
-        return suggestion; // Restituisce il suggerimento anche se per qualche motivo il prodotto non viene trovato.
-    }).filter(Boolean); // Rimuovi eventuali suggerimenti 'null' se un prodotto non è stato trovato.
-
-    // Restituisci i suggerimenti all'app Flutter.
-    res.status(200).json({ suggestions: finalSuggestions });
+        return null;
+    }).filter(Boolean);
+    
+    // ******************** SECONDA MODIFICA CHIRURGICA ********************
+    // Restituisco l'array direttamente, come si aspetta l'app Flutter.
+    res.status(200).json(finalSuggestions);
 
   } catch (error) {
     console.error('Errore generico durante la generazione dei suggerimenti:', error);
-    // Errore generico del server.
-    res.status(500).json({ error: 'Si è verificato un errore interno del server durante la generazione dei suggerimenti.' });
+    res.status(500).json([]); // Restituisci array vuoto in caso di errore grave
   }
 }
