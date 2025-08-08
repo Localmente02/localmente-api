@@ -1,6 +1,6 @@
 const admin = require('firebase-admin');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-// Inizializzazione di Firebase
 if (!admin.apps.length) {
   try {
     admin.initializeApp({
@@ -15,14 +15,8 @@ if (!admin.apps.length) {
   }
 }
 const db = admin.firestore();
+db.settings({ preferRest: true }); // Aggiunta di sicurezza per la connessione
 
-// ******************** MODIFICA CHIAVE QUI ********************
-// Questa riga forza l'uso di un'implementazione diversa per le chiamate di rete,
-// che a volte risolve bug di compatibilità come quello che stiamo vedendo.
-db.settings({ preferRest: true });
-// *************************************************************
-
-// Funzione handler principale
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -32,16 +26,14 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
 
-  console.log("Inizio test brutale con fix preferRest.");
-
   try {
+    // Test "Brutale": ignora tutto e restituisce 3 prodotti a caso
     const productsSnapshot = await db.collection('global_product_catalog')
       .where('isPiazzaVendor', '==', true)
       .limit(20)
       .get();
 
     if (productsSnapshot.empty) {
-      console.log("Nessun prodotto 'isPiazzaVendor: true' trovato.");
       return res.status(200).json([]);
     }
 
@@ -51,7 +43,7 @@ module.exports = async (req, res) => {
         id: doc.id,
         nome: data.productName,
         prezzo: data.price,
-        spiegazione: "Questo è un prodotto di test casuale dal catalogo Piazza.",
+        spiegazione: "Prodotto di test casuale dal catalogo Piazza.",
         imageUrl: data.imageUrls && data.imageUrls.length > 0 ? data.imageUrls[0] : null,
         unit: data.unit || '',
       };
@@ -59,13 +51,11 @@ module.exports = async (req, res) => {
 
     const shuffled = allPiazzaProducts.sort(() => 0.5 - Math.random());
     const randomSuggestions = shuffled.slice(0, 3);
-
-    console.log(`Test brutale completato. Restituisco ${randomSuggestions.length} prodotti.`);
     
     return res.status(200).json(randomSuggestions);
 
   } catch (error) {
-    console.error('Errore grave durante il test brutale (con fix):', error);
-    return res.status(500).json({ error: 'Errore interno durante il recupero dei prodotti di test.' });
+    console.error('Errore durante il test brutale:', error);
+    return res.status(500).json({ error: 'Errore interno.' });
   }
 };
