@@ -15,7 +15,7 @@ const db = admin.firestore();
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
-const STOP_WORDS = new Set(['e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la', 'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della']);
+const STOP_WORDS = new Set(['e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la', 'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della', 'ama']);
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -27,15 +27,9 @@ module.exports = async (req, res) => {
 
   try {
     const userPreferences = req.body;
-    
-    // ==========================================================
-    //  CAMBIO CHIAVE: Carichiamo fino a 1000 prodotti (tutto il catalogo per i test)
-    // ==========================================================
     const productsSnapshot = await db.collection('global_product_catalog').limit(1000).get();
     
-    if (productsSnapshot.empty) {
-      return res.status(200).json([]);
-    }
+    if (productsSnapshot.empty) { return res.status(200).json([]); }
     
     let allProducts = productsSnapshot.docs
       .map(doc => ({ id: doc.id, ...doc.data() }))
@@ -48,7 +42,10 @@ module.exports = async (req, res) => {
       console.log(`Termini di ricerca estratti: ${searchTerms.join(', ')}`);
       allProducts.forEach(product => {
         let score = 0;
-        const productText = `${product.productName || ''} ${product.productDescription || ''} ${(product.keywords || []).join(' ')} ${(product.searchKeywords || []).join(' ')}`.toLowerCase();
+        // ==========================================================
+        //  MODIFICA CHIAVE: Cerchiamo in TUTTI i campi di testo importanti
+        // ==========================================================
+        const productText = `${product.productName || ''} ${product.productDescription || ''} ${(product.keywords || []).join(' ')} ${(product.searchKeywords || []).join(' ')} ${product.productCategory || ''} ${product.subCategory || ''}`.toLowerCase();
         
         searchTerms.forEach(term => {
           if (productText.includes(term)) {
@@ -65,7 +62,7 @@ module.exports = async (req, res) => {
       
       const bestMatches = prioritizedProducts.map(item => item.product);
       const otherProducts = allProducts.filter(p => !bestMatches.some(best => best.id === p.id));
-      allProducts = [...bestMatches, ...otherProducts]; // Ora usiamo tutti i match trovati
+      allProducts = [...bestMatches, ...otherProducts];
       console.log(`Trovati ${bestMatches.length} prodotti pertinenti. Catalogo finale per AI: ${allProducts.length} prodotti.`);
     }
     
@@ -123,23 +120,19 @@ function createPrompt(prefs, products) {
 
   return `
     Sei un assistente regali geniale. Il tuo compito è trovare i 3 migliori regali da una lista di prodotti.
-
     **Regole:**
     1.  Analizza le preferenze.
     2.  Sii flessibile: Se l'utente chiede "scarpe Nike" ma tu hai solo "scarpe Adidas", suggerisci quelle!
-    3.  Scegli i 3 prodotti MIGLIORI dalla lista. Se non trovi nulla di attinente, restituisci un array vuoto [].
+    3.  Scegli i 3 prodotti MIGLIORI dalla lista. Se non trovi nulla, restituisci un array vuoto [].
     4.  Per ogni prodotto, crea una chiave "aiExplanation" con una frase breve (massimo 15 parole), brillante e convincente.
-
     **Preferenze utente:**
     - Descrizione: "${prefs.personDescription || 'Non specificata'}"
     - Relazione: ${prefs.relationship}
     - Interessi: ${prefs.hobbies.join(', ') || 'Non specificati'}
     - Budget massimo: ${prefs.budget.max} euro
-
-    **Lista prodotti disponibili (I primi sono i più pertinenti, analizza nome, descrizione, categoria e keywords):**
+    **Lista prodotti disponibili (I primi sono i più pertinenti):**
     ${JSON.stringify(productListForAI.slice(0, 100))} 
-
-    **Il tuo output DEVE essere solo un array JSON. Formato:**
+    **Output (DEVE essere solo JSON):**
     [
       { "id": "id_prodotto_1", "aiExplanation": "La tua motivazione geniale qui." }
     ]
