@@ -9,49 +9,58 @@ try {
       credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY)),
     });
   }
-} catch (e) {
-  console.error('Firebase Admin Initialization Error', e.stack);
-}
+} catch (e) { console.error('Firebase Admin Initialization Error', e.stack); }
 const db = admin.firestore();
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
+// Parole comuni da ignorare nella ricerca
+const STOP_WORDS = new Set(['e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la', 'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della']);
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'POST', OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-  
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Metodo non consentito' });
-  }
+  if (req.method === 'OPTIONS') { return res.status(200).end(); }
+  if (req.method !== 'POST') { return res.status(405).json({ error: 'Metodo non consentito' }); }
 
   try {
     const userPreferences = req.body;
 
-    const productsSnapshot = await db.collection('global_product_catalog').limit(100).get();
-    if (productsSnapshot.empty) {
-      return res.status(404).json({ error: 'Nessun prodotto trovato nel catalogo globale.' });
+    // --- FASE 1: Pre-selezione Intelligente ---
+    const searchTerms = extractKeywords(userPreferences);
+    
+    let products = [];
+    if (searchTerms.length > 0) {
+        console.log(`Ricerca mirata con i termini: ${searchTerms.join(', ')}`);
+        const targetedSnapshot = await db.collection('global_product_catalog')
+            .where('searchKeywords', 'array-contains-any', searchTerms.slice(0, 10)) // Firestore limita a 10 'array-contains-any'
+            .limit(50)
+            .get();
+        products = targetedSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     }
     
-    // CORREZIONE CHIAVE: Uso i tuoi nomi di campo (productName, productImageUrl)
-    const allProducts = productsSnapshot.docs
-      .map(doc => ({ id: doc.id, ...doc.data() }))
-      .filter(p => p.productName && p.price != null && p.productImageUrl); 
+    // --- FASE 2: Arricchimento del catalogo ---
+    // Se abbiamo trovato pochi risultati, ne aggiungiamo altri a caso per dare più scelta all'AI
+    if (products.length < 50) {
+        const randomSnapshot = await db.collection('global_product_catalog').limit(100).get();
+        const randomProducts = randomSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        
+        // Uniamo le due liste e rimuoviamo i duplicati
+        const productMap = new Map();
+        [...products, ...randomProducts].forEach(p => productMap.set(p.id, p));
+        products = Array.from(productMap.values());
+    }
+    
+    const allProducts = products.filter(p => p.productName && p.price != null && p.productImageUrl);
 
     if (allProducts.length === 0) {
-        console.log("Nessun prodotto valido trovato dopo il filtro. Attivazione Piano B diretto.");
-        const fallbackProducts = snapshotToFallback(productsSnapshot);
-        const randomFallback = getRandomProducts(fallbackProducts, 3);
-        return res.status(200).json(randomFallback);
+      return res.status(200).json([]); // Restituisce vuoto se non trova nulla, l'app mostrerà "Ops!"
     }
 
     let suggestions = [];
-    
     try {
         const prompt = createPrompt(userPreferences, allProducts);
         const result = await model.generateContent(prompt);
@@ -63,14 +72,12 @@ module.exports = async (req, res) => {
             suggestions = aiSuggestions.map(aiSugg => {
                 const fullProduct = allProducts.find(p => p.id === aiSugg.id);
                 if (!fullProduct) return null;
-                
-                // CORREZIONE CHIAVE: Uso i tuoi nomi di campo per creare la risposta
                 return {
                     id: fullProduct.id,
-                    name: fullProduct.productName,       // <-- NOME CORRETTO
+                    name: fullProduct.productName,
                     price: fullProduct.price,
-                    imageUrl: fullProduct.productImageUrl,  // <-- NOME CORRETTO
-                    aiExplanation: aiSugg.aiExplanation || "Un'ottima scelta basata sulle tue preferenze."
+                    imageUrl: fullProduct.productImageUrl,
+                    aiExplanation: aiSugg.aiExplanation || "Una scelta eccellente e pertinente."
                 };
             }).filter(p => p !== null);
         }
@@ -79,7 +86,7 @@ module.exports = async (req, res) => {
     }
 
     if (suggestions.length === 0) {
-        console.log("ATTIVAZIONE PIANO B: L'AI non ha dato risultati validi. Restituisco 3 prodotti casuali.");
+        console.log("ATTIVAZIONE PIANO B: L'AI non ha dato risultati validi. Restituisco 3 prodotti casuali dalla lista pre-selezionata.");
         suggestions = getRandomProducts(allProducts, 3);
     }
     
@@ -91,36 +98,43 @@ module.exports = async (req, res) => {
   }
 };
 
+function extractKeywords(prefs) {
+    const text = `${prefs.personDescription || ''} ${prefs.hobbies.join(' ')}`;
+    if (!text.trim()) return [];
+    
+    // Pulisce il testo, lo divide in parole, rimuove le parole comuni e i duplicati
+    const keywords = text.toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g,"").split(/\s+/);
+    const uniqueKeywords = new Set(keywords);
+    STOP_WORDS.forEach(word => uniqueKeywords.delete(word));
+    return Array.from(uniqueKeywords).filter(k => k.length > 2); // Rimuove parole troppo corte
+}
+
 function createPrompt(prefs, products) {
-  // CORREZIONE CHIAVE: Mando all'AI i dati con i tuoi nomi di campo
-  const productListForAI = products.map(({ id, productName, productDescription, price, productCategory }) => 
-    ({ id, name: productName, description: productDescription, price, category: productCategory })
+  const productListForAI = products.map(({ id, productName, productDescription, price, productCategory, keywords }) => 
+    ({ id, name: productName, description: productDescription, price, category: productCategory, keywords: keywords || [] })
   );
 
   return `
-    Sei un assistente regali eccezionale, amichevole e creativo. Il tuo compito è scegliere i 3 migliori regali per un utente da una lista di prodotti.
-    
-    Ecco le preferenze dell'utente:
-    - Descrizione della persona: "${prefs.personDescription || 'Non specificata'}"
+    Sei un assistente regali geniale. Il tuo compito è trovare i 3 migliori regali da una lista di prodotti.
+
+    **Regole:**
+    1.  **Analizza le preferenze:** capisci chi è la persona, cosa le piace e l'occasione.
+    2.  **Sii flessibile:** Se l'utente chiede "scarpe Nike" ma tu hai solo "scarpe Adidas" o un buono per un negozio di sport, suggerisci quelli! L'importante è trovare qualcosa di attinente e utile.
+    3.  **Scegli i 3 prodotti MIGLIORI dalla lista.** Se non trovi 3 prodotti perfetti, scegline 2, o anche solo 1. Se non trovi NULLA di attinente, restituisci un array vuoto [].
+    4.  **Scrivi una motivazione TOP:** Per ogni prodotto, crea una chiave "aiExplanation" con una frase breve (massimo 15 parole), brillante e convincente.
+
+    **Preferenze utente:**
+    - Descrizione: "${prefs.personDescription || 'Non specificata'}"
     - Relazione: ${prefs.relationship}
-    - Occasione: ${prefs.occasion}
+    - Interessi: ${prefs.hobbies.join(', ') || 'Non specificati'}
     - Budget massimo: ${prefs.budget.max} euro
-    
-    Ecco la lista dei prodotti disponibili (ignora quelli palesemente fuori budget e non pertinenti):
-    ${JSON.stringify(productListForAI.slice(0, 50))} 
-    
-    Il tuo compito è:
-    1. Analizza attentamente le preferenze e la lista prodotti.
-    2. Seleziona i 3 prodotti che ritieni ASSOLUTAMENTE perfetti.
-    3. Per ciascuno dei 3 prodotti, scrivi una motivazione. Crea una chiave "aiExplanation" con una frase breve (massimo 15 parole), calda e convincente che spieghi PERCHÉ quel regalo è perfetto.
-    
-    La tua risposta DEVE ESSERE ESCLUSIVAMENTE un array JSON valido contenente i 3 oggetti prodotto selezionati. Ogni oggetto deve contenere solo "id" e "aiExplanation".
-    Non aggiungere nient'altro. Solo l'array JSON.
-    Formato atteso:
+
+    **Lista prodotti disponibili (analizza nome, descrizione, categoria e keywords):**
+    ${JSON.stringify(productListForAI.slice(0, 70))} 
+
+    **Il tuo output DEVE essere solo un array JSON con gli oggetti che hai scelto. Formato:**
     [
-      { "id": "id_prodotto_1", "aiExplanation": "La tua spiegazione creativa qui." },
-      { "id": "id_prodotto_2", "aiExplanation": "La tua spiegazione creativa qui." },
-      { "id": "id_prodotto_3", "aiExplanation": "La tua spiegazione creativa qui." }
+      { "id": "id_prodotto_1", "aiExplanation": "La tua motivazione geniale qui." }
     ]
   `;
 }
@@ -129,17 +143,11 @@ function getRandomProducts(products, count) {
     const shuffled = [...products].sort(() => 0.5 - Math.random());
     const selected = shuffled.slice(0, Math.min(count, products.length));
     
-    // CORREZIONE CHIAVE: Anche il piano B deve usare i nomi di campo giusti
     return selected.map(p => ({
         id: p.id,
-        name: p.productName,       // <-- NOME CORRETTO
+        name: p.productName,
         price: p.price,
-        imageUrl: p.productImageUrl,  // <-- NOME CORRETTO
-        aiExplanation: "A volte i regali migliori sono una sorpresa! Questo potrebbe fare al caso suo."
+        imageUrl: p.productImageUrl,
+        aiExplanation: "L'AI non ha trovato un match perfetto, ma questo potrebbe essere un'ottima sorpresa!"
     }));
-}
-
-// Funzione di emergenza se il filtro iniziale fallisce
-function snapshotToFallback(snapshot) {
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 }
