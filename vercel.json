@@ -1,26 +1,46 @@
 {
-  "version": 2,
-  "headers": [
-    {
-      "source": "/api/(.*)",
-      "headers": [
-        { "key": "Access-Control-Allow-Credentials", "value": "true" },
-        { "key": "Access-Control-Allow-Origin", "value": "*" },
-        { "key": "Access-Control-Allow-Methods", "value": "GET,OPTIONS,PATCH,DELETE,POST,PUT" },
-        { "key": "Access-Control-Allow-Headers", "value": "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version" }
-      ]
-    }
-  ],
-  "crons": [
-    {
-      "path": "/api/clean_expired_offers",
-      "schedule": "0 3 * * 1"
-    }
-  ],
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/$1"
-    }
-  ]
+"version": 2,
+"functions": {
+"api/clean_expired_offers.js": {
+"runtime": "nodejs20.x"
+},
+"api/create-payment-intent.js": {
+"runtime": "nodejs20.x"
+},
+"api/create-stripe-account-link.js": {
+"runtime": "nodejs20.x"
+},
+"api/get-stripe-balance-and-transactions.js": {
+"runtime": "nodejs20.x"
+},
+"api/webhook.js": {
+"runtime": "nodejs20.x"
+},
+"api/gift-recommender.js": {
+"runtime": "nodejs20.x"
+}
+},
+"headers": [
+{
+"source": "/api/(.)",
+"headers": [
+{ "key": "Access-Control-Allow-Credentials", "value": "true" },
+{ "key": "Access-Control-Allow-Origin", "value": "https://localmente-v3-core.web.app" },
+{ "key": "Access-Control-Allow-Methods", "value": "GET,OPTIONS,PATCH,DELETE,POST,PUT" },
+{ "key": "Access-Control-Allow-Headers", "value": "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version" }
+]
+}
+],
+"crons": [
+{
+"path": "/api/clean_expired_offers",
+"schedule": "0 3 * * 1"
+}
+],
+"rewrites": [
+{
+"source": "/api/(.)",
+"destination": "/api/$1"
+}
+]
 }
