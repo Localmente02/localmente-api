@@ -2,7 +2,7 @@
   "name": "localmente-api",
   "version": "1.0.0",
   "description": "API functions for Localmente project",
-  "type": "module",
+
   "scripts": {
     "start": "vercel dev"
   },
