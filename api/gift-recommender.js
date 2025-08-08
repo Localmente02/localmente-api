@@ -35,16 +35,19 @@ module.exports = async (req, res) => {
 
     const productsSnapshot = await db.collection('global_product_catalog').limit(100).get();
     if (productsSnapshot.empty) {
-      return res.status(404).json({ error: 'Nessun prodotto trovato nel nostro catalogo globale.' });
+      return res.status(404).json({ error: 'Nessun prodotto trovato nel catalogo globale.' });
     }
     
-    // FILTRIAMO I PRODOTTI PER ASSICURARCI CHE ABBIANO I DATI MINIMI
+    // CORREZIONE CHIAVE: Uso i tuoi nomi di campo (productName, productImageUrl)
     const allProducts = productsSnapshot.docs
       .map(doc => ({ id: doc.id, ...doc.data() }))
-      .filter(p => p.name && p.price != null && p.imageUrl); // <-- CONTROLLO CHIAVE!
+      .filter(p => p.productName && p.price != null && p.productImageUrl); 
 
     if (allProducts.length === 0) {
-        return res.status(404).json({ error: "Nessun prodotto valido trovato nel catalogo." });
+        console.log("Nessun prodotto valido trovato dopo il filtro. Attivazione Piano B diretto.");
+        const fallbackProducts = snapshotToFallback(productsSnapshot);
+        const randomFallback = getRandomProducts(fallbackProducts, 3);
+        return res.status(200).json(randomFallback);
     }
 
     let suggestions = [];
@@ -61,11 +64,12 @@ module.exports = async (req, res) => {
                 const fullProduct = allProducts.find(p => p.id === aiSugg.id);
                 if (!fullProduct) return null;
                 
+                // CORREZIONE CHIAVE: Uso i tuoi nomi di campo per creare la risposta
                 return {
                     id: fullProduct.id,
-                    name: fullProduct.name,
+                    name: fullProduct.productName,       // <-- NOME CORRETTO
                     price: fullProduct.price,
-                    imageUrl: fullProduct.imageUrl,
+                    imageUrl: fullProduct.productImageUrl,  // <-- NOME CORRETTO
                     aiExplanation: aiSugg.aiExplanation || "Un'ottima scelta basata sulle tue preferenze."
                 };
             }).filter(p => p !== null);
@@ -75,7 +79,7 @@ module.exports = async (req, res) => {
     }
 
     if (suggestions.length === 0) {
-        console.log("ATTIVAZIONE PIANO B: Restituisco 3 prodotti casuali.");
+        console.log("ATTIVAZIONE PIANO B: L'AI non ha dato risultati validi. Restituisco 3 prodotti casuali.");
         suggestions = getRandomProducts(allProducts, 3);
     }
     
@@ -88,7 +92,10 @@ module.exports = async (req, res) => {
 };
 
 function createPrompt(prefs, products) {
-  const productListForAI = products.map(({ id, name, description, price, category }) => ({ id, name, description, price, category }));
+  // CORREZIONE CHIAVE: Mando all'AI i dati con i tuoi nomi di campo
+  const productListForAI = products.map(({ id, productName, productDescription, price, productCategory }) => 
+    ({ id, name: productName, description: productDescription, price, category: productCategory })
+  );
 
   return `
     Sei un assistente regali eccezionale, amichevole e creativo. Il tuo compito è scegliere i 3 migliori regali per un utente da una lista di prodotti.
@@ -97,9 +104,6 @@ function createPrompt(prefs, products) {
     - Descrizione della persona: "${prefs.personDescription || 'Non specificata'}"
     - Relazione: ${prefs.relationship}
     - Occasione: ${prefs.occasion}
-    - Genere (indicativo): ${prefs.gender}
-    - Interessi: ${prefs.hobbies.join(', ') || 'Non specificati'}
-    - Fascia d'età: dai ${prefs.ageRange.min} ai ${prefs.ageRange.max} anni
     - Budget massimo: ${prefs.budget.max} euro
     
     Ecco la lista dei prodotti disponibili (ignora quelli palesemente fuori budget e non pertinenti):
@@ -108,11 +112,11 @@ function createPrompt(prefs, products) {
     Il tuo compito è:
     1. Analizza attentamente le preferenze e la lista prodotti.
     2. Seleziona i 3 prodotti che ritieni ASSOLUTAMENTE perfetti.
-    3. Per ciascuno dei 3 prodotti, scrivi una motivazione. Crea una chiave "aiExplanation" con una frase breve (massimo 15 parole), calda e convincente che spieghi PERCHÉ quel regalo è perfetto per quella persona. Esempio: "Per le sue serate nerd, questo è il gadget che non sapeva di volere!".
+    3. Per ciascuno dei 3 prodotti, scrivi una motivazione. Crea una chiave "aiExplanation" con una frase breve (massimo 15 parole), calda e convincente che spieghi PERCHÉ quel regalo è perfetto.
     
     La tua risposta DEVE ESSERE ESCLUSIVAMENTE un array JSON valido contenente i 3 oggetti prodotto selezionati. Ogni oggetto deve contenere solo "id" e "aiExplanation".
-    Non aggiungere nient'altro, né saluti, né testo introduttivo. Solo l'array JSON.
-    Formato di risposta atteso:
+    Non aggiungere nient'altro. Solo l'array JSON.
+    Formato atteso:
     [
       { "id": "id_prodotto_1", "aiExplanation": "La tua spiegazione creativa qui." },
       { "id": "id_prodotto_2", "aiExplanation": "La tua spiegazione creativa qui." },
@@ -125,11 +129,17 @@ function getRandomProducts(products, count) {
     const shuffled = [...products].sort(() => 0.5 - Math.random());
     const selected = shuffled.slice(0, Math.min(count, products.length));
     
+    // CORREZIONE CHIAVE: Anche il piano B deve usare i nomi di campo giusti
     return selected.map(p => ({
         id: p.id,
-        name: p.name,
+        name: p.productName,       // <-- NOME CORRETTO
         price: p.price,
-        imageUrl: p.imageUrl,
+        imageUrl: p.productImageUrl,  // <-- NOME CORRETTO
         aiExplanation: "A volte i regali migliori sono una sorpresa! Questo potrebbe fare al caso suo."
     }));
+}
+
+// Funzione di emergenza se il filtro iniziale fallisce
+function snapshotToFallback(snapshot) {
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 }
