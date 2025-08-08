@@ -3,9 +3,6 @@
 const admin = require('firebase-admin');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-// --- CONFIGURAZIONE ---
-// Inizializza Firebase Admin SDK
-// Le credenziali vengono lette automaticamente dalle Environment Variables di Vercel
 try {
   if (!admin.apps.length) {
     admin.initializeApp({
@@ -17,20 +14,14 @@ try {
 }
 const db = admin.firestore();
 
-// Inizializza Google Gemini
-// La API Key viene letta automaticamente dalle Environment Variables di Vercel
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
-
-// --- FUNZIONE PRINCIPALE ---
 module.exports = async (req, res) => {
-  // Imposta header per CORS (permettono all'app di chiamare l'API da qualsiasi origine)
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-  // Gestione della richiesta pre-flight OPTIONS
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
@@ -42,32 +33,33 @@ module.exports = async (req, res) => {
   try {
     const userPreferences = req.body;
 
-    // 1. Recupera i prodotti da Firebase
     const productsSnapshot = await db.collection('global_product_catalog').limit(100).get();
     if (productsSnapshot.empty) {
       return res.status(404).json({ error: 'Nessun prodotto trovato nel nostro catalogo globale.' });
     }
-    const allProducts = productsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    
+    // FILTRIAMO I PRODOTTI PER ASSICURARCI CHE ABBIANO I DATI MINIMI
+    const allProducts = productsSnapshot.docs
+      .map(doc => ({ id: doc.id, ...doc.data() }))
+      .filter(p => p.name && p.price != null && p.imageUrl); // <-- CONTROLLO CHIAVE!
+
+    if (allProducts.length === 0) {
+        return res.status(404).json({ error: "Nessun prodotto valido trovato nel catalogo." });
+    }
 
     let suggestions = [];
     
     try {
-        // 2. Prepara il prompt per l'AI
         const prompt = createPrompt(userPreferences, allProducts);
-        
-        // 3. Chiama l'AI
         const result = await model.generateContent(prompt);
         const responseText = result.response.text();
-        
-        // 4. Interpreta la risposta in modo robusto
         const cleanJsonString = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
         const aiSuggestions = JSON.parse(cleanJsonString);
 
         if (aiSuggestions && Array.isArray(aiSuggestions) && aiSuggestions.length > 0) {
-            // Arricchisci i suggerimenti AI con i dati completi (es. imageUrl, prezzo, ecc.)
             suggestions = aiSuggestions.map(aiSugg => {
                 const fullProduct = allProducts.find(p => p.id === aiSugg.id);
-                if (!fullProduct) return null; // Salta se l'AI ha inventato un ID
+                if (!fullProduct) return null;
                 
                 return {
                     id: fullProduct.id,
@@ -76,20 +68,17 @@ module.exports = async (req, res) => {
                     imageUrl: fullProduct.imageUrl,
                     aiExplanation: aiSugg.aiExplanation || "Un'ottima scelta basata sulle tue preferenze."
                 };
-            }).filter(p => p !== null); // Rimuovi eventuali null
+            }).filter(p => p !== null);
         }
     } catch (aiError) {
         console.error("ERRORE DALL'AI, attivando il Piano B:", aiError);
-        // Piano B scatta qui se l'AI fallisce (es. formato JSON errato, errore API, etc.)
     }
 
-    // 5. Piano B: Se l'AI fallisce o non restituisce nulla, prendi 3 prodotti a caso
     if (suggestions.length === 0) {
         console.log("ATTIVAZIONE PIANO B: Restituisco 3 prodotti casuali.");
         suggestions = getRandomProducts(allProducts, 3);
     }
     
-    // 6. Rispondi all'app
     return res.status(200).json(suggestions);
 
   } catch (error) {
@@ -97,9 +86,6 @@ module.exports = async (req, res) => {
     return res.status(500).json({ error: 'Errore interno del nostro assistente. Riprova più tardi.' });
   }
 };
-
-
-// --- FUNZIONI DI SUPPORTO ---
 
 function createPrompt(prefs, products) {
   const productListForAI = products.map(({ id, name, description, price, category }) => ({ id, name, description, price, category }));
@@ -137,7 +123,7 @@ function createPrompt(prefs, products) {
 
 function getRandomProducts(products, count) {
     const shuffled = [...products].sort(() => 0.5 - Math.random());
-    const selected = shuffled.slice(0, count);
+    const selected = shuffled.slice(0, Math.min(count, products.length));
     
     return selected.map(p => ({
         id: p.id,
