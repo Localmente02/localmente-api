@@ -1,7 +1,7 @@
 const https = require('https');
 const { GoogleAuth } = require('google-auth-library');
 
-async function getPiazzaProducts(projectId) {
+async function getPiazzaProducts(projectId, clientEmail, privateKey) {
   const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:runQuery`;
   const queryBody = {
     structuredQuery: {
@@ -19,9 +19,17 @@ async function getPiazzaProducts(projectId) {
     }
   };
 
+  // ******************** MODIFICA CHIAVE QUI ********************
+  // Passiamo le credenziali direttamente alla libreria di autenticazione
   const auth = new GoogleAuth({
+    credentials: {
+      client_email: clientEmail,
+      private_key: privateKey,
+    },
     scopes: 'https://www.googleapis.com/auth/datastore'
   });
+  // *************************************************************
+
   const client = await auth.getClient();
   const token = await client.getAccessToken();
 
@@ -56,7 +64,18 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    const firestoreResponse = await getPiazzaProducts(process.env.FIREBASE_PROJECT_ID);
+    // Leggiamo le credenziali dalle variabili d'ambiente di Vercel
+    const projectId = process.env.FIREBASE_PROJECT_ID;
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+    // La private key ha bisogno di un piccolo trucco per gestire i caratteri speciali
+    const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n');
+
+    if (!projectId || !clientEmail || !privateKey) {
+      throw new Error("Mancano le credenziali di Firebase nelle variabili d'ambiente.");
+    }
+
+    // E le passiamo alla nostra funzione
+    const firestoreResponse = await getPiazzaProducts(projectId, clientEmail, privateKey);
     
     const products = firestoreResponse.map(item => {
         if (!item.document) return null;
