@@ -1,22 +1,22 @@
-// Stile CommonJS per massima compatibilità con le altre funzioni
 const admin = require('firebase-admin');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-// Inizializza Firebase Admin SDK solo una volta
 if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    }),
-  });
+  try {
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      }),
+    });
+  } catch (e) {
+    console.error("Firebase Admin Init Error:", e);
+  }
 }
 const db = admin.firestore();
 
-// Funzione handler principale
 module.exports = async (req, res) => {
-  // Configurazione CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -33,19 +33,8 @@ module.exports = async (req, res) => {
     const { userPreferences, userCurrentLocation } = req.body;
 
     if (!userPreferences || !userCurrentLocation || !userCurrentLocation.cap) {
-      return res.status(400).json({ error: 'Mancano dati essenziali.' });
+      return res.status(400).json({ error: 'Dati mancanti.' });
     }
-
-    const {
-      interessi,
-      eta,
-      genere,
-      budget,
-      personalita,
-      relazione,
-      occasione,
-      noteAggiuntive,
-    } = userPreferences;
 
     const userCap = userCurrentLocation.cap;
 
@@ -57,6 +46,10 @@ module.exports = async (req, res) => {
       .limit(500)
       .get();
 
+    if (productsSnapshot.empty) {
+      return res.status(200).json([]);
+    }
+
     const availableProducts = productsSnapshot.docs.map(doc => {
       const data = doc.data();
       return {
@@ -64,46 +57,28 @@ module.exports = async (req, res) => {
         nome: data.productName,
         descrizione: data.description || '',
         prezzo: data.price,
-        unita: data.unit || 'pezzo',
+        unita: data.unit || '',
         imageUrl: data.imageUrls && data.imageUrls.length > 0 ? data.imageUrls[0] : null,
       };
-    }).filter(p => p.prezzo > 0 && p.nome);
-
-    if (availableProducts.length === 0) {
-      return res.status(404).json([]);
-    }
+    });
 
     const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
     const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
-    const promptText = `Sei un esperto selezionatore di regali. Suggerisci 3 prodotti dal catalogo fornito basandoti sulle preferenze. Per ogni suggerimento, includi "id", "nome", "prezzo", e "spiegazione". Rispondi SOLO con un array JSON di 3 oggetti.
-
-Preferenze:
-- Interessi: ${interessi ? interessi.join(', ') : 'N/A'}
-- Età: ${eta || 'N/A'}
-- Genere: ${genere || 'N/A'}
-- Budget: ${budget || 'N/A'}
-- Personalità: ${personalita || 'N/A'}
-- Relazione: ${relazione || 'N/A'}
-- Occasione: ${occasione || 'N/A'}
-- Note: ${noteAggiuntive || 'N/A'}
-
-Catalogo (${availableProducts.length} prodotti):
-${JSON.stringify(availableProducts, null, 2)}
-
-Rispondi SOLO con l'array JSON.`;
+    const promptText = `Sei un esperto di regali. Suggerisci 3 prodotti dal catalogo, basandoti sulle preferenze. Per ogni suggerimento, includi "id", "nome", "prezzo", e una "spiegazione" breve. Rispondi SOLO con un array JSON di 3 oggetti.
+    Preferenze Utente: ${JSON.stringify(userPreferences)}
+    Catalogo Prodotti: ${JSON.stringify(availableProducts)}
+    Rispondi SOLO con l'array JSON.`;
 
     const result = await model.generateContent(promptText);
     const response = await result.response;
-    let aiResponseText = response.text();
-    aiResponseText = aiResponseText.replace(/```json\n|```/g, '').trim();
+    let aiResponseText = response.text().replace(/```json\n|```/g, '').trim();
 
     let parsedSuggestions;
     try {
       parsedSuggestions = JSON.parse(aiResponseText);
     } catch (e) {
-      console.error("Errore parsing AI:", aiResponseText);
-      return res.status(500).json([]);
+      return res.status(200).json([]);
     }
 
     const finalSuggestions = parsedSuggestions.map(suggestion => {
@@ -115,6 +90,6 @@ Rispondi SOLO con l'array JSON.`;
 
   } catch (error) {
     console.error('Errore funzione gift-recommender:', error);
-    return res.status(500).json([]);
+    return res.status(500).json({ error: 'Errore interno del server.' });
   }
 };
