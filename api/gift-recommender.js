@@ -27,26 +27,35 @@ module.exports = async (req, res) => {
     const userPreferences = req.body;
     
     // ==========================================================
-    //  LA TUA VISIONE: Prendiamo solo prodotti dei "negozianti"
+    //  STRATEGIA FINALE: Carichiamo tutto e filtriamo in casa.
     // ==========================================================
-    console.log("Eseguo la query per prendere solo i prodotti dei 'negozianti'...");
-    const productsSnapshot = await db.collection('global_product_catalog')
-        .where('vendorUserType', '==', 'negoziante')
-        .limit(500) // Prendiamo un bel po' di prodotti di negozianti
-        .get();
+    console.log("Carico un ampio set di prodotti dal catalogo...");
+    const productsSnapshot = await db.collection('global_product_catalog').limit(1000).get();
     
     if (productsSnapshot.empty) { 
-        console.log("Nessun prodotto trovato con vendorUserType == 'negoziante'.");
+        console.log("Il catalogo globale è vuoto.");
         return res.status(200).json([]); 
     }
     
-    let allProducts = productsSnapshot.docs
-      .map(doc => ({ id: doc.id, ...doc.data() }))
-      .filter(p => p.productName && p.price != null && p.productImageUrl); 
+    let allProductsRaw = productsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-    console.log(`Trovati ${allProducts.length} prodotti validi di negozianti. Ora li passo all'AI.`);
+    // ==========================================================
+    //  LA CORREZIONE DEFINITIVA: Filtriamo per ENTRAMBI i nomi di campo
+    // ==========================================================
+    const allProducts = allProductsRaw.filter(p => 
+        (p.vendorUserType === 'negoziante' || p.userType === 'negoziante') && // <-- QUI LA MAGIA
+        p.productName && 
+        p.price != null && 
+        p.productImageUrl
+    );
+
+    console.log(`Filtrati ${allProducts.length} prodotti validi di 'negozianti'.`);
     
-    if (allProducts.length === 0) { return res.status(200).json([]); }
+    if (allProducts.length === 0) {
+        console.log("Nessun prodotto di 'negozianti' trovato. Attivo Piano B sul catalogo grezzo.");
+        const fallbackProducts = getRandomProducts(allProductsRaw, 6);
+        return res.status(200).json(fallbackProducts);
+    }
 
     let suggestions = [];
     try {
@@ -72,60 +81,54 @@ module.exports = async (req, res) => {
     } catch (aiError) { console.error("ERRORE DALL'AI, attivando il Piano B:", aiError); }
 
     if (suggestions.length === 0) {
-        console.log("ATTIVAZIONE PIANO B: L'AI non ha dato risultati validi. Restituisco 3 prodotti casuali dalla lista dei negozianti.");
-        suggestions = getRandomProducts(allProducts, 3);
+        console.log("ATTIVAZIONE PIANO B: L'AI non ha dato risultati. Restituisco 6 prodotti casuali dalla lista dei negozianti.");
+        suggestions = getRandomProducts(allProducts, 6);
     }
     
     return res.status(200).json(suggestions);
 
   } catch (error) {
     console.error('ERRORE GRAVE NELLA FUNZIONE:', error);
-    if (error.message && error.message.includes('The query requires an index')) {
-        console.error('ERRORE DI INDICE FIREBASE! La query per "negoziante" richiede un indice. Crealo usando il link che trovi in questo log.');
-    }
-    return res.status(500).json({ error: 'Errore interno. Potrebbe essere necessario un indice su "vendorUserType". Controlla i log di Vercel.' });
+    return res.status(500).json({ error: 'Errore interno del nostro assistente.' });
   }
 };
 
-// Le funzioni di supporto (createPrompt, getRandomProducts) restano identiche
 function createPrompt(prefs, products) {
   const productListForAI = products.map(p => ({
     id: p.id,
     name: p.productName,
     description: p.productDescription || p.shortDescription,
     category: p.productCategory,
-    subCategory: p.subCategory,
     brand: p.brand,
-    keywords: [...(p.keywords || []), ...(p.tags || []), ...(p.productTags || [])],
     attributes: [ p.condition, p.isUnique ? 'pezzo unico' : null, p.isCustomizable ? 'personalizzabile' : null ].filter(Boolean).join(', ')
   }));
 
   return `
-    Sei un assistente regali geniale. Il tuo compito è trovare i 3 migliori regali da una lista di prodotti che provengono esclusivamente da negozi di abbigliamento, elettronica, sport, ecc. (NON alimentari).
+    Sei un personal shopper eccezionale. Il tuo compito è trovare fino a 6 regali perfetti da questa lista di prodotti di negozi (non alimentari).
 
-    **Regole d'Oro:**
-    1.  **Immedesimati:** Leggi le preferenze dell'utente.
-    2.  **Pensa come un umano:** Se l'utente chiede "scarpe Nike" e tu vedi "sneakers Adidas", è un ottimo suggerimento alternativo.
-    3.  **Scegli i 3 prodotti MIGLIORI dalla lista.** Se non trovi nulla di buono, restituisci un array vuoto [].
-    4.  **Scrivi una motivazione da venditore** (massimo 15 parole).
+    **Regole:**
+    1.  **Capisci l'utente:** Analizza la sua descrizione per capire cosa cerca veramente.
+    2.  **Sii flessibile:** Se chiede "scarpe Nike" ma ci sono solo "sneakers Adidas", sono un'ottima alternativa.
+    3.  **Qualità > Quantità:** Scegli solo i prodotti MIGLIORI. Se ne trovi solo 2 perfetti, suggerisci solo quelli.
+    4.  **Motivazione brillante:** Per ogni prodotto, scrivi una "aiExplanation" breve (max 15 parole) e convincente.
 
     **Preferenze utente:**
     - Descrizione: "${prefs.personDescription || 'Non specificata'}"
-    - Interessi: ${prefs.hobbies.join(', ') || 'Non specificati'}
 
     **Catalogo Prodotti a disposizione:**
     ${JSON.stringify(productListForAI.slice(0, 150))} 
 
     **Il tuo output DEVE essere solo un array JSON. Formato:**
     [
-      { "id": "id_prodotto_1", "aiExplanation": "La tua motivazione geniale qui." }
+      { "id": "id_prodotto_1", "aiExplanation": "Perfette per il suo stile casual e sportivo." }
     ]
   `;
 }
 
 function getRandomProducts(products, count) {
-    const shuffled = [...products].sort(() => 0.5 - Math.random());
-    const selected = shuffled.slice(0, Math.min(count, products.length));
+    const validProducts = products.filter(p => p.productName && p.price != null && p.productImageUrl);
+    const shuffled = [...validProducts].sort(() => 0.5 - Math.random());
+    const selected = shuffled.slice(0, Math.min(count, validProducts.length));
     
     return selected.map(p => ({
         id: p.id,
