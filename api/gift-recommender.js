@@ -41,9 +41,11 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: 'Dati mancanti.' });
     }
 
-    // LEGGE 100 PRODOTTI DALLA COLLEZIONE, SENZA NESSUNISSIMO FILTRO.
+    // ###############################################################
+    // NESSUN FILTRO. NIENTE. PRENDE I PRODOTTI CHE CI SONO E BASTA.
+    // ###############################################################
     const productsSnapshot = await db.collection('global_product_catalog')
-      .limit(100)
+      .limit(100) // Prende i primi 100 prodotti che trova
       .get();
 
     if (productsSnapshot.empty) {
