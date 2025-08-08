@@ -6,12 +6,13 @@
     "start": "vercel dev"
   },
   "dependencies": {
+    "firebase-admin": "^12.1.0",
     "google-auth-library": "^9.11.0",
     "imagekit": "^4.1.4",
     "stripe": "^15.11.0",
     "@google/generative-ai": "^0.2.0"
   },
   "engines": {
-    "node": "18.x"
+    "node": "20.x"
   }
 }
