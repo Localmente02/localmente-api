@@ -35,13 +35,13 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const { userPreferences } = req.body; // Prendiamo solo le preferenze
+    const { userPreferences } = req.body;
 
     if (!userPreferences) {
       return res.status(400).json({ error: 'Dati mancanti.' });
     }
 
-    // ***** NESSUN FILTRO *****
+    // LEGGE 100 PRODOTTI DALLA COLLEZIONE, SENZA NESSUNISSIMO FILTRO.
     const productsSnapshot = await db.collection('global_product_catalog')
       .limit(100)
       .get();
