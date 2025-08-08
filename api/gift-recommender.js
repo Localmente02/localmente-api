@@ -26,15 +26,25 @@ module.exports = async (req, res) => {
   try {
     const userPreferences = req.body;
     
-    const productsSnapshot = await db.collection('global_product_catalog').limit(250).get();
+    // ==========================================================
+    //  LA TUA VISIONE: Prendiamo solo prodotti dei "negozianti"
+    // ==========================================================
+    console.log("Eseguo la query per prendere solo i prodotti dei 'negozianti'...");
+    const productsSnapshot = await db.collection('global_product_catalog')
+        .where('vendorUserType', '==', 'negoziante')
+        .limit(500) // Prendiamo un bel po' di prodotti di negozianti
+        .get();
     
-    if (productsSnapshot.empty) { return res.status(200).json([]); }
+    if (productsSnapshot.empty) { 
+        console.log("Nessun prodotto trovato con vendorUserType == 'negoziante'.");
+        return res.status(200).json([]); 
+    }
     
     let allProducts = productsSnapshot.docs
       .map(doc => ({ id: doc.id, ...doc.data() }))
       .filter(p => p.productName && p.price != null && p.productImageUrl); 
 
-    console.log(`Test Forza Bruta: passando ${allProducts.length} prodotti casuali all'AI.`);
+    console.log(`Trovati ${allProducts.length} prodotti validi di negozianti. Ora li passo all'AI.`);
     
     if (allProducts.length === 0) { return res.status(200).json([]); }
 
@@ -43,12 +53,7 @@ module.exports = async (req, res) => {
         const prompt = createPrompt(userPreferences, allProducts);
         const result = await model.generateContent(prompt);
         const responseText = result.response.text();
-
-        // ==========================================================
-        //  ECCO LA CORREZIONE
-        // ==========================================================
         const cleanJsonString = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-        
         const aiSuggestions = JSON.parse(cleanJsonString);
 
         if (aiSuggestions && Array.isArray(aiSuggestions) && aiSuggestions.length > 0) {
@@ -67,7 +72,7 @@ module.exports = async (req, res) => {
     } catch (aiError) { console.error("ERRORE DALL'AI, attivando il Piano B:", aiError); }
 
     if (suggestions.length === 0) {
-        console.log("ATTIVAZIONE PIANO B: L'AI non ha dato risultati validi. Restituisco 3 prodotti casuali.");
+        console.log("ATTIVAZIONE PIANO B: L'AI non ha dato risultati validi. Restituisco 3 prodotti casuali dalla lista dei negozianti.");
         suggestions = getRandomProducts(allProducts, 3);
     }
     
@@ -75,10 +80,14 @@ module.exports = async (req, res) => {
 
   } catch (error) {
     console.error('ERRORE GRAVE NELLA FUNZIONE:', error);
-    return res.status(500).json({ error: 'Errore interno del nostro assistente. Riprova più tardi.' });
+    if (error.message && error.message.includes('The query requires an index')) {
+        console.error('ERRORE DI INDICE FIREBASE! La query per "negoziante" richiede un indice. Crealo usando il link che trovi in questo log.');
+    }
+    return res.status(500).json({ error: 'Errore interno. Potrebbe essere necessario un indice su "vendorUserType". Controlla i log di Vercel.' });
   }
 };
 
+// Le funzioni di supporto (createPrompt, getRandomProducts) restano identiche
 function createPrompt(prefs, products) {
   const productListForAI = products.map(p => ({
     id: p.id,
@@ -92,20 +101,17 @@ function createPrompt(prefs, products) {
   }));
 
   return `
-    Sei un assistente regali geniale. Il tuo compito è trovare i 3 migliori regali da una lista di prodotti.
+    Sei un assistente regali geniale. Il tuo compito è trovare i 3 migliori regali da una lista di prodotti che provengono esclusivamente da negozi di abbigliamento, elettronica, sport, ecc. (NON alimentari).
 
     **Regole d'Oro:**
-    1.  **Immedesimati:** Leggi le preferenze dell'utente e crea un'immagine mentale della persona che riceverà il regalo.
-    2.  **Pensa come un umano:** Se l'utente chiede "scarpe Nike" e tu vedi "sneakers Adidas", è un ottimo suggerimento alternativo! L'importante è cogliere l'intento.
-    3.  **Valuta TUTTO:** Per ogni prodotto, considera il nome, la descrizione, la categoria, la marca e gli attributi.
-    4.  **Qualità > Quantità:** Scegli solo i 3 prodotti che sono VERAMENTE perfetti. Se ne trovi solo uno o due, va benissimo. Se non c'è nulla di buono, restituisci un array vuoto [].
-    5.  **Scrivi una motivazione da venditore:** Per ogni prodotto scelto, crea una chiave "aiExplanation" con una frase breve (massimo 15 parole), brillante e convincente.
+    1.  **Immedesimati:** Leggi le preferenze dell'utente.
+    2.  **Pensa come un umano:** Se l'utente chiede "scarpe Nike" e tu vedi "sneakers Adidas", è un ottimo suggerimento alternativo.
+    3.  **Scegli i 3 prodotti MIGLIORI dalla lista.** Se non trovi nulla di buono, restituisci un array vuoto [].
+    4.  **Scrivi una motivazione da venditore** (massimo 15 parole).
 
     **Preferenze utente:**
     - Descrizione: "${prefs.personDescription || 'Non specificata'}"
-    - Relazione: ${prefs.relationship}
     - Interessi: ${prefs.hobbies.join(', ') || 'Non specificati'}
-    - Budget massimo: ${prefs.budget.max} euro
 
     **Catalogo Prodotti a disposizione:**
     ${JSON.stringify(productListForAI.slice(0, 150))} 
