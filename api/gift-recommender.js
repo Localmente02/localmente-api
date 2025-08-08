@@ -1,54 +1,42 @@
-const admin = require('firebase-admin');
-
-if (!admin.apps.length) {
-  try {
-    admin.initializeApp({
-      credential: admin.credential.cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
-        privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      }),
-    });
-  } catch (e) {
-    console.error("Firebase Admin Init Error:", e);
-  }
-}
-const db = admin.firestore();
-db.settings({ preferRest: true });
-
+// Funzione di test ultra-semplice. Non usa Firebase. Non usa AI.
 module.exports = async (req, res) => {
+  // Impostazioni CORS per permettere all'app di parlare
   res.setHeader('Access-Control-Allow-Origin', '*');
-  if (req.method === 'OPTIONS') return res.status(200).end();
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  try {
-    const productsSnapshot = await db.collection('global_product_catalog')
-      .where('isPiazzaVendor', '==', true)
-      .limit(20)
-      .get();
-
-    if (productsSnapshot.empty) {
-      return res.status(200).json([]);
-    }
-
-    const allPiazzaProducts = productsSnapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        nome: data.productName,
-        prezzo: data.price,
-        spiegazione: "Prodotto di test.",
-        imageUrl: data.imageUrls ? data.imageUrls[0] : null,
-        unit: data.unit || '',
-      };
-    });
-
-    const shuffled = allPiazzaProducts.sort(() => 0.5 - Math.random());
-    const randomSuggestions = shuffled.slice(0, 3);
-    
-    return res.status(200).json(randomSuggestions);
-
-  } catch (error) {
-    console.error('Errore durante il test:', error);
-    return res.status(500).json({ error: 'Errore interno.' });
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
   }
+
+  // Creiamo una lista finta di suggerimenti
+  const fakeSuggestions = [
+    {
+      id: "test_01",
+      nome: "Test Prodotto 1",
+      prezzo: 19.99,
+      spiegazione: "Questo è un test. Se lo vedi, il collegamento App -> Vercel funziona.",
+      imageUrl: "https://via.placeholder.com/150/FF0000/FFFFFF?Text=Test1",
+      unit: "pz"
+    },
+    {
+      id: "test_02",
+      nome: "Test Prodotto 2",
+      prezzo: 49.50,
+      spiegazione: "Il sistema di base sta comunicando correttamente.",
+      imageUrl: "https://via.placeholder.com/150/00FF00/FFFFFF?Text=Test2",
+      unit: "kg"
+    },
+    {
+      id: "test_03",
+      nome: "Test Prodotto 3",
+      prezzo: 100.00,
+      spiegazione: "Il prossimo passo sarà ricollegare Firebase.",
+      imageUrl: "https://via.placeholder.com/150/0000FF/FFFFFF?Text=Test3",
+      unit: "pz"
+    }
+  ];
+
+  // Restituiamo la lista finta, sempre
+  return res.status(200).json(fakeSuggestions);
 };
