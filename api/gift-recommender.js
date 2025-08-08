@@ -15,7 +15,7 @@ const db = admin.firestore();
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
-const STOP_WORDS = new Set(['e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la', 'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della', 'ama']);
+const STOP_WORDS = new Set(['e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la', 'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della', 'ama', 'piacciono', 'qualsiasi']);
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -42,10 +42,25 @@ module.exports = async (req, res) => {
       console.log(`Termini di ricerca estratti: ${searchTerms.join(', ')}`);
       allProducts.forEach(product => {
         let score = 0;
+        
         // ==========================================================
-        //  MODIFICA CHIAVE: Cerchiamo in TUTTI i campi di testo importanti
+        //  MODIFICA CHIAVE: Cerchiamo in TUTTI i campi di testo possibili
         // ==========================================================
-        const productText = `${product.productName || ''} ${product.productDescription || ''} ${(product.keywords || []).join(' ')} ${(product.searchKeywords || []).join(' ')} ${product.productCategory || ''} ${product.subCategory || ''}`.toLowerCase();
+        const productText = [
+            product.productName,
+            product.brand,
+            product.productDescription,
+            product.shortDescription,
+            product.productCategory,
+            product.subCategory,
+            (product.keywords || []).join(' '),
+            (product.searchKeywords || []).join(' '),
+            (product.productTags || []).join(' '), // Dati Artigiano/Negoziante
+            (product.tags || []).join(' '), // Dati Artigiano
+            (product.productColors || []).join(' '), // Dati Negoziante
+            (product.materials || []).join(' '), // Dati Artigiano (se presente)
+            product.condition
+        ].filter(Boolean).join(' ').toLowerCase();
         
         searchTerms.forEach(term => {
           if (productText.includes(term)) {
@@ -114,25 +129,45 @@ function extractKeywords(prefs) {
 }
 
 function createPrompt(prefs, products) {
-  const productListForAI = products.map(({ id, productName, productDescription, price, productCategory, keywords }) => 
-    ({ id, name: productName, description: productDescription, price, category: productCategory, keywords: keywords || [] })
-  );
+  // ==========================================================
+  //  MODIFICA CHIAVE: Passiamo un dossier COMPLETO all'AI
+  // ==========================================================
+  const productListForAI = products.map(p => ({
+    id: p.id,
+    name: p.productName,
+    description: p.productDescription || p.shortDescription,
+    category: p.productCategory,
+    subCategory: p.subCategory,
+    brand: p.brand,
+    keywords: [...(p.keywords || []), ...(p.tags || []), ...(p.productTags || [])],
+    // Aggiungiamo attributi speciali che l'AI può capire
+    attributes: [
+        p.condition,
+        p.isUnique ? 'pezzo unico' : null,
+        p.isCustomizable ? 'personalizzabile' : null
+    ].filter(Boolean).join(', ')
+  }));
 
   return `
-    Sei un assistente regali geniale. Il tuo compito è trovare i 3 migliori regali da una lista di prodotti.
-    **Regole:**
-    1.  Analizza le preferenze.
-    2.  Sii flessibile: Se l'utente chiede "scarpe Nike" ma tu hai solo "scarpe Adidas", suggerisci quelle!
-    3.  Scegli i 3 prodotti MIGLIORI dalla lista. Se non trovi nulla, restituisci un array vuoto [].
-    4.  Per ogni prodotto, crea una chiave "aiExplanation" con una frase breve (massimo 15 parole), brillante e convincente.
+    Sei un assistente regali geniale, un vero intenditore. Il tuo compito è trovare i 3 migliori regali da una lista di prodotti, come farebbe un personal shopper esperto.
+
+    **Regole d'Oro:**
+    1.  **Immedesimati:** Leggi le preferenze dell'utente e crea un'immagine mentale della persona che riceverà il regalo.
+    2.  **Pensa come un umano, non come un computer:** Se l'utente chiede "scarpe Nike" e tu vedi "sneakers Adidas" o "scarpe da running Asics", sono ottimi suggerimenti alternativi! L'importante è cogliere l'intento.
+    3.  **Valuta TUTTO:** Per ogni prodotto, considera il nome, la descrizione, la categoria, la marca e gli attributi speciali (es. 'pezzo unico', 'personalizzabile').
+    4.  **Qualità > Quantità:** Scegli solo i 3 prodotti che sono VERAMENTE perfetti. Se ne trovi solo uno o due, va benissimo. Se non c'è nulla di buono, restituisci un array vuoto [].
+    5.  **Scrivi una motivazione da venditore:** Per ogni prodotto scelto, crea una chiave "aiExplanation" con una frase breve (massimo 15 parole), brillante e convincente che tocchi le corde giuste.
+
     **Preferenze utente:**
     - Descrizione: "${prefs.personDescription || 'Non specificata'}"
     - Relazione: ${prefs.relationship}
     - Interessi: ${prefs.hobbies.join(', ') || 'Non specificati'}
     - Budget massimo: ${prefs.budget.max} euro
-    **Lista prodotti disponibili (I primi sono i più pertinenti):**
+
+    **Catalogo Prodotti a disposizione (i primi sono i più pertinenti, ma analizzali tutti):**
     ${JSON.stringify(productListForAI.slice(0, 100))} 
-    **Output (DEVE essere solo JSON):**
+
+    **Il tuo output DEVE essere solo un array JSON. Formato:**
     [
       { "id": "id_prodotto_1", "aiExplanation": "La tua motivazione geniale qui." }
     ]
