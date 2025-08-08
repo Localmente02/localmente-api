@@ -1,81 +1,92 @@
-const admin = require('firebase-admin');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const https = require('https');
+const { GoogleAuth } = require('google-auth-library');
 
-const TEST_PREFERENCES = {
-  interessi: ["tecnologia", "gaming"],
-  eta: "25-35",
-  budget: "50-200",
-  occasione: "compleanno"
-};
+async function getProducts(projectId, clientEmail, privateKey) {
+  // ... (tutto il codice della funzione REST che ti ho già dato)
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:runQuery`;
+  const queryBody = {
+    structuredQuery: {
+      from: [{ collectionId: 'global_product_catalog' }],
+      limit: 100
+    }
+  };
 
-const serviceAccount = {
-  projectId: process.env.FIREBASE_PROJECT_ID,
-  clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-  privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-};
-const googleApiKey = process.env.GOOGLE_API_KEY;
+  const auth = new GoogleAuth({
+    credentials: {
+      client_email: clientEmail,
+      private_key: privateKey,
+    },
+    scopes: 'https://www.googleapis.com/auth/datastore'
+  });
 
-if (!serviceAccount.projectId || !serviceAccount.clientEmail || !serviceAccount.privateKey || !googleApiKey) {
-    console.error("!!! ERRORE: MANCANO LE CREDENZIALI.");
-    return;
-}
+  const client = await auth.getClient();
+  const token = await client.getAccessToken();
 
-try {
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
+  const options = {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token.token}`,
+      'Content-Type': 'application/json'
+    }
+  };
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve(JSON.parse(data));
+        } else {
+          reject(new Error(`Firestore API error: ${res.statusCode} ${data}`));
+        }
+      });
     });
-} catch(e) {
-    console.error("!!! ERRORE INIZIALIZZAZIONE FIREBASE:", e.message);
-    return;
+    req.on('error', reject);
+    req.write(JSON.stringify(queryBody));
+    req.end();
+  });
 }
 
-const db = admin.firestore();
-db.settings({ preferRest: true });
-
-const genAI = new GoogleGenerativeAI(googleApiKey);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-async function runTest() {
-  console.log(`--- INIZIO TEST SENZA NESSUN FILTRO ---`);
+module.exports = async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    console.log("1. Sto prendendo i prodotti da 'global_product_catalog'...");
-    const productsSnapshot = await db.collection('global_product_catalog')
-      .limit(100)
-      .get();
+    const projectId = process.env.FIREBASE_PROJECT_ID;
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+    const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n');
 
-    if (productsSnapshot.empty) {
-      console.log(`\nRISULTATO: Connessione a Firebase OK, ma la collezione 'global_product_catalog' è VUOTA.`);
-      return;
+    if (!projectId || !clientEmail || !privateKey) {
+      throw new Error("Mancano le credenziali di Firebase.");
     }
 
-    const availableProducts = productsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    console.log(`   SUCCESSO! Trovati ${availableProducts.length} prodotti.`);
+    const firestoreResponse = await getProducts(projectId, clientEmail, privateKey);
+    
+    const products = firestoreResponse.map(item => {
+        if (!item.document) return null;
+        const fields = item.document.fields;
+        return {
+            id: item.document.name.split('/').pop(),
+            nome: fields.productName?.stringValue || '',
+            prezzo: fields.price?.doubleValue || fields.price?.integerValue || 0,
+            spiegazione: "Prodotto di test.",
+            imageUrl: fields.imageUrls?.arrayValue?.values?.[0]?.stringValue || null,
+            unit: fields.unit?.stringValue || ''
+        }
+    }).filter(Boolean);
 
-    console.log("\n2. Sto inviando i dati all'AI...");
-    const prompt = `Suggerisci 3 regali dal catalogo, basandoti sulle preferenze. Rispondi SOLO con un array JSON.
-      Preferenze: ${JSON.stringify(TEST_PREFERENCES)}
-      Catalogo: ${JSON.stringify(availableProducts.map(p => ({id: p.id, productName: p.productName, price: p.price, description: p.description})))}
-    `;
-
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
-    console.log("   RISPOSTA DALL'AI RICEVUTA!");
-    console.log("------------------------------------------");
-    console.log(text);
-    console.log("------------------------------------------");
-
-    try {
-      JSON.parse(text);
-      console.log("\n--- TEST COMPLETATO CON SUCCESSO! ---");
-    } catch (e) {
-      console.log("\n!!! ERRORE: L'AI non ha risposto con un JSON valido.");
+    if (products.length === 0) {
+        return res.status(200).json([]);
     }
+
+    const shuffled = products.sort(() => 0.5 - Math.random());
+    const randomSuggestions = shuffled.slice(0, 3);
+    
+    return res.status(200).json(randomSuggestions);
 
   } catch (error) {
-    console.log("\n!!! ERRORE DURANTE IL TEST !!!");
-    console.error(error);
+    console.error('Errore API REST:', error);
+    return res.status(500).json({ error: 'Errore interno.' });
   }
-}
-
-runTest();
+};
