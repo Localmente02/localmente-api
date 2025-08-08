@@ -26,9 +26,6 @@ module.exports = async (req, res) => {
   try {
     const userPreferences = req.body;
     
-    // ==========================================================
-    //  TEST BRUTALE: Prendiamo 250 prodotti a caso e basta.
-    // ==========================================================
     const productsSnapshot = await db.collection('global_product_catalog').limit(250).get();
     
     if (productsSnapshot.empty) { return res.status(200).json([]); }
@@ -46,7 +43,12 @@ module.exports = async (req, res) => {
         const prompt = createPrompt(userPreferences, allProducts);
         const result = await model.generateContent(prompt);
         const responseText = result.response.text();
-        const cleanJsonString = responseText.replace(/```json/g, '').replace(/```g, '').trim();
+
+        // ==========================================================
+        //  ECCO LA CORREZIONE
+        // ==========================================================
+        const cleanJsonString = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+        
         const aiSuggestions = JSON.parse(cleanJsonString);
 
         if (aiSuggestions && Array.isArray(aiSuggestions) && aiSuggestions.length > 0) {
