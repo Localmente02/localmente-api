@@ -15,13 +15,11 @@ const db = admin.firestore();
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
-// Parole comuni da ignorare nella ricerca
 const STOP_WORDS = new Set(['e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la', 'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della']);
 
 module.exports = async (req, res) => {
-  // LA CORREZIONE ERA QUI
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS'); // OPTIONS era fuori dalle virgolette
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') { return res.status(200).end(); }
@@ -29,32 +27,49 @@ module.exports = async (req, res) => {
 
   try {
     const userPreferences = req.body;
-
-    const searchTerms = extractKeywords(userPreferences);
     
-    let products = [];
-    if (searchTerms.length > 0) {
-        console.log(`Ricerca mirata con i termini: ${searchTerms.join(', ')}`);
-        const targetedSnapshot = await db.collection('global_product_catalog')
-            .where('searchKeywords', 'array-contains-any', searchTerms.slice(0, 10))
-            .limit(50)
-            .get();
-        products = targetedSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    }
+    // ==========================================================
+    //  CAMBIO CHIAVE: Carichiamo fino a 1000 prodotti (tutto il catalogo per i test)
+    // ==========================================================
+    const productsSnapshot = await db.collection('global_product_catalog').limit(1000).get();
     
-    if (products.length < 50) {
-        const randomSnapshot = await db.collection('global_product_catalog').limit(100).get();
-        const randomProducts = randomSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        const productMap = new Map();
-        [...products, ...randomProducts].forEach(p => productMap.set(p.id, p));
-        products = Array.from(productMap.values());
-    }
-    
-    const allProducts = products.filter(p => p.productName && p.price != null && p.productImageUrl);
-
-    if (allProducts.length === 0) {
+    if (productsSnapshot.empty) {
       return res.status(200).json([]);
     }
+    
+    let allProducts = productsSnapshot.docs
+      .map(doc => ({ id: doc.id, ...doc.data() }))
+      .filter(p => p.productName && p.price != null && p.productImageUrl); 
+
+    const searchTerms = extractKeywords(userPreferences);
+    let prioritizedProducts = [];
+
+    if (searchTerms.length > 0) {
+      console.log(`Termini di ricerca estratti: ${searchTerms.join(', ')}`);
+      allProducts.forEach(product => {
+        let score = 0;
+        const productText = `${product.productName || ''} ${product.productDescription || ''} ${(product.keywords || []).join(' ')} ${(product.searchKeywords || []).join(' ')}`.toLowerCase();
+        
+        searchTerms.forEach(term => {
+          if (productText.includes(term)) {
+            score++;
+          }
+        });
+        
+        if (score > 0) {
+          prioritizedProducts.push({ product, score });
+        }
+      });
+
+      prioritizedProducts.sort((a, b) => b.score - a.score);
+      
+      const bestMatches = prioritizedProducts.map(item => item.product);
+      const otherProducts = allProducts.filter(p => !bestMatches.some(best => best.id === p.id));
+      allProducts = [...bestMatches, ...otherProducts]; // Ora usiamo tutti i match trovati
+      console.log(`Trovati ${bestMatches.length} prodotti pertinenti. Catalogo finale per AI: ${allProducts.length} prodotti.`);
+    }
+    
+    if (allProducts.length === 0) { return res.status(200).json([]); }
 
     let suggestions = [];
     try {
@@ -77,12 +92,10 @@ module.exports = async (req, res) => {
                 };
             }).filter(p => p !== null);
         }
-    } catch (aiError) {
-        console.error("ERRORE DALL'AI, attivando il Piano B:", aiError);
-    }
+    } catch (aiError) { console.error("ERRORE DALL'AI, attivando il Piano B:", aiError); }
 
     if (suggestions.length === 0) {
-        console.log("ATTIVAZIONE PIANO B: L'AI non ha dato risultati. Restituisco 3 prodotti casuali.");
+        console.log("ATTIVAZIONE PIANO B: L'AI non ha dato risultati validi. Restituisco 3 prodotti casuali.");
         suggestions = getRandomProducts(allProducts, 3);
     }
     
@@ -90,10 +103,6 @@ module.exports = async (req, res) => {
 
   } catch (error) {
     console.error('ERRORE GRAVE NELLA FUNZIONE:', error);
-    // Se l'errore è quello dell'indice, Vercel lo stamperà nei log e ci darà il link
-    if (error.message && error.message.includes('The query requires an index')) {
-        console.error('ERRORE DI INDICE FIREBASE! Crea l\'indice usando il link che trovi in questo log.');
-    }
     return res.status(500).json({ error: 'Errore interno del nostro assistente. Riprova più tardi.' });
   }
 };
@@ -114,11 +123,11 @@ function createPrompt(prefs, products) {
 
   return `
     Sei un assistente regali geniale. Il tuo compito è trovare i 3 migliori regali da una lista di prodotti.
-    
+
     **Regole:**
     1.  Analizza le preferenze.
     2.  Sii flessibile: Se l'utente chiede "scarpe Nike" ma tu hai solo "scarpe Adidas", suggerisci quelle!
-    3.  Scegli i 3 prodotti MIGLIORI dalla lista. Se non ne trovi, restituisci un array vuoto [].
+    3.  Scegli i 3 prodotti MIGLIORI dalla lista. Se non trovi nulla di attinente, restituisci un array vuoto [].
     4.  Per ogni prodotto, crea una chiave "aiExplanation" con una frase breve (massimo 15 parole), brillante e convincente.
 
     **Preferenze utente:**
@@ -127,8 +136,8 @@ function createPrompt(prefs, products) {
     - Interessi: ${prefs.hobbies.join(', ') || 'Non specificati'}
     - Budget massimo: ${prefs.budget.max} euro
 
-    **Lista prodotti disponibili (analizza nome, descrizione, categoria e keywords):**
-    ${JSON.stringify(productListForAI.slice(0, 70))} 
+    **Lista prodotti disponibili (I primi sono i più pertinenti, analizza nome, descrizione, categoria e keywords):**
+    ${JSON.stringify(productListForAI.slice(0, 100))} 
 
     **Il tuo output DEVE essere solo un array JSON. Formato:**
     [
