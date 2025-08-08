@@ -1,6 +1,6 @@
 const admin = require('firebase-admin');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 
+// Inizializzazione di Firebase
 if (!admin.apps.length) {
   try {
     admin.initializeApp({
@@ -16,16 +16,9 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
-// Funzione per mescolare un array (per prendere prodotti a caso)
-function shuffleArray(array) {
-  for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [array[i], array[j]] = [array[j], array[i]];
-  }
-  return array;
-}
-
+// Funzione handler principale
 module.exports = async (req, res) => {
+  // Impostazioni CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -34,96 +27,45 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Metodo non permesso.' });
-  }
+  console.log("Inizio test brutale: recupero 3 prodotti Piazza a caso.");
 
   try {
-    const { userPreferences, userCurrentLocation } = req.body;
-
-    if (!userPreferences || !userCurrentLocation || !userCurrentLocation.cap) {
-      return res.status(400).json({ error: 'Dati mancanti.' });
-    }
-
-    const userCap = userCurrentLocation.cap;
-
+    // IGNORA IL CAP, IGNORA LE PREFERENZE.
+    // Prende semplicemente i prodotti che sono "Piazza Vendor".
     const productsSnapshot = await db.collection('global_product_catalog')
-      .where('isAvailable', '==', true)
-      .where('isMarketplaceActive', '==', true)
-      .where('vendorCap', '==', userCap)
       .where('isPiazzaVendor', '==', true)
-      .limit(500)
+      .limit(20) // Prendiamo 20 prodotti per avere un po' di scelta
       .get();
 
     if (productsSnapshot.empty) {
-      console.log(`Nessun prodotto trovato per il CAP ${userCap}. Restituisco array vuoto.`);
+      console.log("Nessun prodotto 'isPiazzaVendor: true' trovato in tutto il database.");
       return res.status(200).json([]);
     }
 
-    const availableProducts = productsSnapshot.docs.map(doc => {
+    const allPiazzaProducts = productsSnapshot.docs.map(doc => {
       const data = doc.data();
       return {
         id: doc.id,
         nome: data.productName,
-        descrizione: data.description || '',
         prezzo: data.price,
-        unita: data.unit || '',
+        spiegazione: "Questo è un prodotto di test casuale dal catalogo Piazza.", // Spiegazione fissa per il test
         imageUrl: data.imageUrls && data.imageUrls.length > 0 ? data.imageUrls[0] : null,
+        unit: data.unit || '',
       };
     });
 
-    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+    // Mescoliamo i risultati per assicurarci che siano casuali
+    const shuffled = allPiazzaProducts.sort(() => 0.5 - Math.random());
+    
+    // Selezioniamo i primi 3
+    const randomSuggestions = shuffled.slice(0, 3);
 
-    const promptText = `Sei un esperto di regali. Suggerisci 3 prodotti dal catalogo, basandoti sulle preferenze. Per ogni suggerimento, includi "id", "nome", "prezzo", e una "spiegazione" breve. Rispondi SOLO con un array JSON di 3 oggetti.
-    Preferenze Utente: ${JSON.stringify(userPreferences)}
-    Catalogo Prodotti: ${JSON.stringify(availableProducts)}
-    Rispondi SOLO con l'array JSON. Se non trovi nulla di adatto, restituisci un array vuoto [].`;
-
-    const result = await model.generateContent(promptText);
-    const response = await result.response;
-    let aiResponseText = response.text().replace(/```json\n|```/g, '').trim();
-
-    let finalSuggestions = [];
-    try {
-      const parsedSuggestions = JSON.parse(aiResponseText);
-      if (Array.isArray(parsedSuggestions)) {
-          finalSuggestions = parsedSuggestions.map(suggestion => {
-          const product = availableProducts.find(p => p.id === suggestion.id);
-          return product ? { ...suggestion, spiegazione: suggestion.spiegazione || "Un'ottima idea regalo!", imageUrl: product.imageUrl, unit: product.unita } : null;
-        }).filter(Boolean);
-      }
-    } catch (e) {
-      console.error("Errore nel parsing della risposta AI o risposta non valida:", aiResponseText);
-      // L'AI non ha risposto bene, l'array finalSuggestions rimarrà vuoto.
-    }
-
-    // ******************** LOGICA DI FALLBACK (LA TUA IDEA!) ********************
-    // Se, dopo tutto il processo, non abbiamo suggerimenti intelligenti...
-    if (finalSuggestions.length === 0) {
-      console.log("Nessun suggerimento intelligente dall'AI. Attivo il fallback con prodotti a caso.");
-      
-      // Mescoliamo i prodotti disponibili
-      const shuffledProducts = shuffleArray(availableProducts);
-      
-      // Prendiamo i primi 4 (o meno se ce ne sono meno)
-      const randomSuggestions = shuffledProducts.slice(0, 4).map(product => ({
-        id: product.id,
-        nome: product.nome,
-        prezzo: product.prezzo,
-        spiegazione: "Te lo suggeriamo perché è un prodotto di qualità della tua zona!", // Spiegazione generica
-        imageUrl: product.imageUrl,
-        unit: product.unita,
-      }));
-      
-      finalSuggestions = randomSuggestions;
-    }
-    // **************************************************************************
-
-    return res.status(200).json(finalSuggestions);
+    console.log(`Test brutale completato. Restituisco ${randomSuggestions.length} prodotti a caso.`);
+    
+    return res.status(200).json(randomSuggestions);
 
   } catch (error) {
-    console.error('Errore grave nella funzione gift-recommender:', error);
-    return res.status(500).json({ error: 'Errore interno del server.' });
+    console.error('Errore grave durante il test brutale:', error);
+    return res.status(500).json({ error: 'Errore interno durante il recupero dei prodotti di test.' });
   }
 };
