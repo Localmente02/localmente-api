@@ -16,6 +16,15 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
+// Funzione per mescolare un array (per prendere prodotti a caso)
+function shuffleArray(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array;
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -47,6 +56,7 @@ module.exports = async (req, res) => {
       .get();
 
     if (productsSnapshot.empty) {
+      console.log(`Nessun prodotto trovato per il CAP ${userCap}. Restituisco array vuoto.`);
       return res.status(200).json([]);
     }
 
@@ -68,28 +78,52 @@ module.exports = async (req, res) => {
     const promptText = `Sei un esperto di regali. Suggerisci 3 prodotti dal catalogo, basandoti sulle preferenze. Per ogni suggerimento, includi "id", "nome", "prezzo", e una "spiegazione" breve. Rispondi SOLO con un array JSON di 3 oggetti.
     Preferenze Utente: ${JSON.stringify(userPreferences)}
     Catalogo Prodotti: ${JSON.stringify(availableProducts)}
-    Rispondi SOLO con l'array JSON.`;
+    Rispondi SOLO con l'array JSON. Se non trovi nulla di adatto, restituisci un array vuoto [].`;
 
     const result = await model.generateContent(promptText);
     const response = await result.response;
     let aiResponseText = response.text().replace(/```json\n|```/g, '').trim();
 
-    let parsedSuggestions;
+    let finalSuggestions = [];
     try {
-      parsedSuggestions = JSON.parse(aiResponseText);
+      const parsedSuggestions = JSON.parse(aiResponseText);
+      if (Array.isArray(parsedSuggestions)) {
+          finalSuggestions = parsedSuggestions.map(suggestion => {
+          const product = availableProducts.find(p => p.id === suggestion.id);
+          return product ? { ...suggestion, spiegazione: suggestion.spiegazione || "Un'ottima idea regalo!", imageUrl: product.imageUrl, unit: product.unita } : null;
+        }).filter(Boolean);
+      }
     } catch (e) {
-      return res.status(200).json([]);
+      console.error("Errore nel parsing della risposta AI o risposta non valida:", aiResponseText);
+      // L'AI non ha risposto bene, l'array finalSuggestions rimarrà vuoto.
     }
 
-    const finalSuggestions = parsedSuggestions.map(suggestion => {
-      const product = availableProducts.find(p => p.id === suggestion.id);
-      return product ? { ...suggestion, imageUrl: product.imageUrl, unit: product.unita } : null;
-    }).filter(Boolean);
+    // ******************** LOGICA DI FALLBACK (LA TUA IDEA!) ********************
+    // Se, dopo tutto il processo, non abbiamo suggerimenti intelligenti...
+    if (finalSuggestions.length === 0) {
+      console.log("Nessun suggerimento intelligente dall'AI. Attivo il fallback con prodotti a caso.");
+      
+      // Mescoliamo i prodotti disponibili
+      const shuffledProducts = shuffleArray(availableProducts);
+      
+      // Prendiamo i primi 4 (o meno se ce ne sono meno)
+      const randomSuggestions = shuffledProducts.slice(0, 4).map(product => ({
+        id: product.id,
+        nome: product.nome,
+        prezzo: product.prezzo,
+        spiegazione: "Te lo suggeriamo perché è un prodotto di qualità della tua zona!", // Spiegazione generica
+        imageUrl: product.imageUrl,
+        unit: product.unita,
+      }));
+      
+      finalSuggestions = randomSuggestions;
+    }
+    // **************************************************************************
 
     return res.status(200).json(finalSuggestions);
 
   } catch (error) {
-    console.error('Errore funzione gift-recommender:', error);
+    console.error('Errore grave nella funzione gift-recommender:', error);
     return res.status(500).json({ error: 'Errore interno del server.' });
   }
 };
