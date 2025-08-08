@@ -2,8 +2,7 @@
   "name": "localmente-api",
   "version": "1.0.0",
   "description": "API functions for Localmente project",
-  "main": "gift-recommender.js",
-  
+  "type": "module",
   "scripts": {
     "start": "vercel dev"
   },
