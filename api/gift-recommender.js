@@ -19,8 +19,9 @@ const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 const STOP_WORDS = new Set(['e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la', 'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della']);
 
 module.exports = async (req, res) => {
+  // LA CORREZIONE ERA QUI
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST', OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS'); // OPTIONS era fuori dalle virgolette
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') { return res.status(200).end(); }
@@ -29,26 +30,21 @@ module.exports = async (req, res) => {
   try {
     const userPreferences = req.body;
 
-    // --- FASE 1: Pre-selezione Intelligente ---
     const searchTerms = extractKeywords(userPreferences);
     
     let products = [];
     if (searchTerms.length > 0) {
         console.log(`Ricerca mirata con i termini: ${searchTerms.join(', ')}`);
         const targetedSnapshot = await db.collection('global_product_catalog')
-            .where('searchKeywords', 'array-contains-any', searchTerms.slice(0, 10)) // Firestore limita a 10 'array-contains-any'
+            .where('searchKeywords', 'array-contains-any', searchTerms.slice(0, 10))
             .limit(50)
             .get();
         products = targetedSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     }
     
-    // --- FASE 2: Arricchimento del catalogo ---
-    // Se abbiamo trovato pochi risultati, ne aggiungiamo altri a caso per dare più scelta all'AI
     if (products.length < 50) {
         const randomSnapshot = await db.collection('global_product_catalog').limit(100).get();
         const randomProducts = randomSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        
-        // Uniamo le due liste e rimuoviamo i duplicati
         const productMap = new Map();
         [...products, ...randomProducts].forEach(p => productMap.set(p.id, p));
         products = Array.from(productMap.values());
@@ -57,7 +53,7 @@ module.exports = async (req, res) => {
     const allProducts = products.filter(p => p.productName && p.price != null && p.productImageUrl);
 
     if (allProducts.length === 0) {
-      return res.status(200).json([]); // Restituisce vuoto se non trova nulla, l'app mostrerà "Ops!"
+      return res.status(200).json([]);
     }
 
     let suggestions = [];
@@ -86,7 +82,7 @@ module.exports = async (req, res) => {
     }
 
     if (suggestions.length === 0) {
-        console.log("ATTIVAZIONE PIANO B: L'AI non ha dato risultati validi. Restituisco 3 prodotti casuali dalla lista pre-selezionata.");
+        console.log("ATTIVAZIONE PIANO B: L'AI non ha dato risultati. Restituisco 3 prodotti casuali.");
         suggestions = getRandomProducts(allProducts, 3);
     }
     
@@ -94,6 +90,10 @@ module.exports = async (req, res) => {
 
   } catch (error) {
     console.error('ERRORE GRAVE NELLA FUNZIONE:', error);
+    // Se l'errore è quello dell'indice, Vercel lo stamperà nei log e ci darà il link
+    if (error.message && error.message.includes('The query requires an index')) {
+        console.error('ERRORE DI INDICE FIREBASE! Crea l\'indice usando il link che trovi in questo log.');
+    }
     return res.status(500).json({ error: 'Errore interno del nostro assistente. Riprova più tardi.' });
   }
 };
@@ -101,12 +101,10 @@ module.exports = async (req, res) => {
 function extractKeywords(prefs) {
     const text = `${prefs.personDescription || ''} ${prefs.hobbies.join(' ')}`;
     if (!text.trim()) return [];
-    
-    // Pulisce il testo, lo divide in parole, rimuove le parole comuni e i duplicati
     const keywords = text.toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g,"").split(/\s+/);
     const uniqueKeywords = new Set(keywords);
     STOP_WORDS.forEach(word => uniqueKeywords.delete(word));
-    return Array.from(uniqueKeywords).filter(k => k.length > 2); // Rimuove parole troppo corte
+    return Array.from(uniqueKeywords).filter(k => k.length > 2);
 }
 
 function createPrompt(prefs, products) {
@@ -116,12 +114,12 @@ function createPrompt(prefs, products) {
 
   return `
     Sei un assistente regali geniale. Il tuo compito è trovare i 3 migliori regali da una lista di prodotti.
-
+    
     **Regole:**
-    1.  **Analizza le preferenze:** capisci chi è la persona, cosa le piace e l'occasione.
-    2.  **Sii flessibile:** Se l'utente chiede "scarpe Nike" ma tu hai solo "scarpe Adidas" o un buono per un negozio di sport, suggerisci quelli! L'importante è trovare qualcosa di attinente e utile.
-    3.  **Scegli i 3 prodotti MIGLIORI dalla lista.** Se non trovi 3 prodotti perfetti, scegline 2, o anche solo 1. Se non trovi NULLA di attinente, restituisci un array vuoto [].
-    4.  **Scrivi una motivazione TOP:** Per ogni prodotto, crea una chiave "aiExplanation" con una frase breve (massimo 15 parole), brillante e convincente.
+    1.  Analizza le preferenze.
+    2.  Sii flessibile: Se l'utente chiede "scarpe Nike" ma tu hai solo "scarpe Adidas", suggerisci quelle!
+    3.  Scegli i 3 prodotti MIGLIORI dalla lista. Se non ne trovi, restituisci un array vuoto [].
+    4.  Per ogni prodotto, crea una chiave "aiExplanation" con una frase breve (massimo 15 parole), brillante e convincente.
 
     **Preferenze utente:**
     - Descrizione: "${prefs.personDescription || 'Non specificata'}"
@@ -132,7 +130,7 @@ function createPrompt(prefs, products) {
     **Lista prodotti disponibili (analizza nome, descrizione, categoria e keywords):**
     ${JSON.stringify(productListForAI.slice(0, 70))} 
 
-    **Il tuo output DEVE essere solo un array JSON con gli oggetti che hai scelto. Formato:**
+    **Il tuo output DEVE essere solo un array JSON. Formato:**
     [
       { "id": "id_prodotto_1", "aiExplanation": "La tua motivazione geniale qui." }
     ]
