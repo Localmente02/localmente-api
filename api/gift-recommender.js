@@ -1,5 +1,5 @@
 // api/gift-recommender.js
-// IL CERVELLO DELLA RICERCA UNIVERSALE (INTUITIVO E FLESSIBILE)
+// IL CERVELLO DELLA RICERCA UNIVERSALE (FLESSIBILE CON GLI SPAZI)
 
 const admin = require('firebase-admin');
 
@@ -12,16 +12,15 @@ try {
 } catch (e) { console.error('Firebase Admin Initialization Error', e.stack); }
 const db = admin.firestore();
 
-// Parole comuni da ignorare nella ricerca, ampliate per essere più efficaci
 const STOP_WORDS = new Set([
-    'e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la', // Articoli e preposizioni
-    'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della', 'perche', 'come', 'cosa', 'chi', 'quale', 'dove', // Pronomi e interrogativi
-    'ama', 'piacciono', 'qualsiasi', 'regalo', 'vorrei', 'fare', 'regalare', 'cerco', 'cerca', 'trova', 'mostrami', // Verbi e richieste comuni
-    'amico', 'amica', 'nipote', 'nonna', 'nonno', 'mamma', 'papa', 'figlio', 'figlia', 'fratello', 'sorella', 'collega', 'partner', // Relazioni
-    'nuove', 'vecchie', 'belle', 'brutte', 'buone', 'cattive', 'migliori', 'peggiori', 'di', 'marca', 'comode', 'sportive', 'eleganti', // Aggettivi generici
-    'che', 'vende', 'vendono', 'venduta', 'venduto', 'in', 'citta', 'o', 'delle', 'dei', 'della', 'con', 'a', 'b', // Altre stop words
-    'per', 'da', 'su', 'con', 'tra', 'fra', 'se', 'io', 'lui', 'lei', 'noi', 'voi', 'loro', 'questo', 'questa', 'quelli', 'quelle', // Preposizioni e pronomi comuni
-    'devo', 'posso', 'voglio', 'bisogno' // Verbi di intento
+    'e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la',
+    'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della', 'perche', 'come', 'cosa', 'chi', 'quale', 'dove',
+    'ama', 'piacciono', 'qualsiasi', 'regalo', 'vorrei', 'fare', 'regalare', 'cerco', 'cerca', 'trova', 'mostrami',
+    'amico', 'amica', 'nipote', 'nonna', 'nonno', 'mamma', 'papa', 'figlio', 'figlia', 'fratello', 'sorella', 'collega', 'partner',
+    'nuove', 'vecchie', 'belle', 'brutte', 'buone', 'cattive', 'migliori', 'peggiori', 'di', 'marca', 'comode', 'sportive', 'eleganti',
+    'che', 'vende', 'vendono', 'venduta', 'venduto', 'in', 'citta', 'o', 'delle', 'dei', 'della', 'con', 'a', 'b',
+    'per', 'da', 'su', 'con', 'tra', 'fra', 'se', 'io', 'lui', 'lei', 'noi', 'voi', 'loro', 'questo', 'questa', 'quelli', 'quelle',
+    'devo', 'posso', 'voglio', 'bisogno'
 ]);
 
 const EXPLANATION_PHRASES = {
@@ -42,6 +41,134 @@ const EXPLANATION_PHRASES = {
     default: "Ecco alcuni suggerimenti pertinenti dalla nostra piattaforma."
 };
 
+
+// ==========================================================
+//  FUNZIONI DI SUPPORTO (POSIZIONATE IN CIMA)
+// ==========================================================
+
+// Estrae parole chiave dalla query dell'utente (MODIFICATA)
+function extractKeywords(userPreferences) {
+    const text = userPreferences.personDescription || '';
+    if (!text.trim()) return [];
+    
+    // Pulisce il testo e lo divide in parole separate da spazio singolo
+    const cleanedText = text.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+    const rawWords = cleanedText.split(' ');
+    
+    const uniqueKeywords = new Set();
+    
+    // Aggiungi le parole singole (filtrando le stop words)
+    rawWords.forEach(word => {
+        if (word.length > 2 && !STOP_WORDS.has(word)) {
+            uniqueKeywords.add(word);
+        }
+    });
+
+    // Aggiungi le frasi multi-parola e le loro versioni compattate (senza spazi)
+    for (let i = 0; i < rawWords.length; i++) {
+        for (let j = i + 1; j < Math.min(i + 4, rawWords.length + 1); j++) { // Considera frasi fino a 3 parole
+            const phrase = rawWords.slice(i, j).join(' ');
+            if (phrase.length > 2 && !STOP_WORDS.has(phrase)) { // Filtra anche le frasi stop words
+                uniqueKeywords.add(phrase); // Esempio: "barsi sport"
+                uniqueKeywords.add(phrase.replace(/\s/g, '')); // Esempio: "barsisport"
+            }
+        }
+    }
+
+    return Array.from(uniqueKeywords);
+}
+
+
+// Assegna un punteggio a un singolo elemento (prodotto, vendor, offer)
+function scoreItem(item, searchTerms, itemType, specificSearchableText = null) {
+    let score = 0;
+    let bestMatchTerm = '';
+    
+    // Combina tutte le parole del searchableIndex o il testo specifico in una singola stringa per la ricerca
+    const itemFullText = itemType === 'product' && Array.isArray(item.searchableIndex)
+        ? item.searchableIndex.join(' ').toLowerCase() // searchIndex è già un array di parole pulite
+        : (specificSearchableText || JSON.stringify(item)).toLowerCase();
+
+    searchTerms.forEach(term => {
+        // Usa includes() per la flessibilità (mela vs mele, nike vs niike, barsisport vs barsi sport)
+        if (itemFullText.includes(term)) {
+            let termScore = 0;
+            // Punteggi pesati in base al tipo di elemento e dove si trova il match
+            switch (itemType) {
+                case 'product':
+                    const pName = (item.productName || '').toLowerCase();
+                    const pBrand = (item.brand || '').toLowerCase();
+                    const pCategory = (item.productCategory || '').toLowerCase();
+
+                    if (pName.includes(term)) { termScore = 1500; }
+                    else if (pBrand.includes(term)) { termScore = 1200; }
+                    else if (pCategory.includes(term)) { termScore = 800; }
+                    else { termScore = 300; }
+                    break;
+                case 'vendor':
+                    const vStoreName = (item.store_name || '').toLowerCase();
+                    const vVendorName = (item.vendor_name || '').toLowerCase();
+                    const vCategory = (item.category || '').toLowerCase();
+
+                    if (vStoreName.includes(term) || vVendorName.includes(term)) { termScore = 2000; }
+                    else if (vCategory.includes(term)) { termScore = 900; }
+                    else { termScore = 400; }
+                    break;
+                case 'offer':
+                    const oTitle = (item.title || '').toLowerCase();
+                    const oProdName = (item.productName || '').toLowerCase();
+                    const oBrand = (item.brand || '').toLowerCase();
+                    
+                    if (oTitle.includes(term)) { termScore = 1800; }
+                    else if (oProdName.includes(term) || oBrand.includes(term)) { termScore = 1000; }
+                    else { termScore = 500; }
+                    break;
+            }
+            score += termScore;
+            if (termScore > 0 && !bestMatchTerm) bestMatchTerm = term;
+        }
+    });
+    
+    return { score, bestMatchTerm };
+}
+
+
+// Genera la spiegazione basata sul tipo di elemento e sul match
+function generateExplanation(itemType, bestMatchTerm, itemData) {
+    const term = (bestMatchTerm || '').toLowerCase();
+    const brand = (itemData.brand || '').toLowerCase();
+    const category = (itemData.productCategory || itemData.category || '').toLowerCase();
+    const name = (itemData.productName || itemData.store_name || itemData.vendor_name || itemData.title || '').toLowerCase();
+
+    const getPhrase = (key, placeholderTerm = '') => {
+        if (EXPLANATION_PHRASES[key]) {
+            return EXPLANATION_PHRASES[key].replace('[TERM]', placeholderTerm);
+        }
+        return EXPLANATION_PHRASES['default'];
+    };
+
+    switch (itemType) {
+        case 'product':
+            if (EXPLANATION_PHRASES['product_' + term]) return getPhrase('product_' + term, term);
+            if (brand && EXPLANATION_PHRASES['product_brand']) return getPhrase('product_brand', itemData.brand);
+            if (category && EXPLANATION_PHRASES['product_category']) return getPhrase('product_category', itemData.productCategory);
+            return getPhrase('product_default');
+        case 'vendor':
+            if (EXPLANATION_PHRASES['vendor_name']) return getPhrase('vendor_name', itemData.store_name || itemData.vendor_name);
+            if (category && EXPLANATION_PHRASES['vendor_category']) return getPhrase('vendor_category', itemData.category);
+            return getPhrase('vendor_default');
+        case 'offer':
+            if (EXPLANATION_PHRASES['offer_title']) return getPhrase('offer_title', itemData.title || itemData.productName);
+            return getPhrase('offer_default');
+        default:
+            return getPhrase('default');
+    }
+}
+
+
+// ==========================================================
+//  FUNZIONE PRINCIPALE EXPORT (module.exports)
+// ==========================================================
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -152,109 +279,3 @@ module.exports = async (req, res) => {
     return res.status(500).json({ error: 'Errore interno del motore di ricerca. Controlla i log di Vercel per i dettagli.' });
   }
 };
-
-// --- FUNZIONI DI SUPPORTO ---
-
-// Estrae parole chiave dalla query dell'utente
-function extractKeywords(userPreferences) {
-    const text = userPreferences.personDescription || '';
-    if (!text.trim()) return [];
-    const cleanedText = text.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ');
-    const rawKeywords = cleanedText.split(' ');
-    
-    const uniqueKeywords = new Set();
-    rawKeywords.forEach(word => {
-        if (word.length > 2 && !STOP_WORDS.has(word)) {
-            uniqueKeywords.add(word);
-        }
-    });
-    return Array.from(uniqueKeywords);
-}
-
-// Assegna un punteggio a un singolo elemento (prodotto, vendor, offer)
-function scoreItem(item, searchTerms, itemType, specificSearchableText = null) {
-    let score = 0;
-    let bestMatchTerm = '';
-    
-    // Combina tutte le parole del searchableIndex o il testo specifico in una singola stringa per la ricerca
-    const itemFullText = itemType === 'product' && Array.isArray(item.searchableIndex)
-        ? item.searchableIndex.join(' ').toLowerCase()
-        : (specificSearchableText || JSON.stringify(item)).toLowerCase();
-
-    searchTerms.forEach(term => {
-        // Usa includes() per la flessibilità (mela vs mele, nike vs niike)
-        if (itemFullText.includes(term)) {
-            let termScore = 0;
-            // Punteggi pesati in base al tipo di elemento e dove si trova il match
-            switch (itemType) {
-                case 'product':
-                    const pName = (item.productName || '').toLowerCase();
-                    const pBrand = (item.brand || '').toLowerCase();
-                    const pCategory = (item.productCategory || '').toLowerCase();
-
-                    // Controllo più granulare per la posizione del match
-                    if (pName.includes(term)) { termScore = 1500; }
-                    else if (pBrand.includes(term)) { termScore = 1200; }
-                    else if (pCategory.includes(term)) { termScore = 800; }
-                    else { termScore = 300; } // Default per match in altri campi (descrizione, keywords)
-                    break;
-                case 'vendor':
-                    const vStoreName = (item.store_name || '').toLowerCase();
-                    const vVendorName = (item.vendor_name || '').toLowerCase();
-                    const vCategory = (item.category || '').toLowerCase();
-
-                    if (vStoreName.includes(term) || vVendorName.includes(term)) { termScore = 2000; } // Priorità MASSIMA per nome negozio/venditore
-                    else if (vCategory.includes(term)) { termScore = 900; }
-                    else { termScore = 400; }
-                    break;
-                case 'offer':
-                    const oTitle = (item.title || '').toLowerCase();
-                    const oProdName = (item.productName || '').toLowerCase();
-                    const oBrand = (item.brand || '').toLowerCase();
-                    
-                    if (oTitle.includes(term)) { termScore = 1800; }
-                    else if (oProdName.includes(term) || oBrand.includes(term)) { termScore = 1000; }
-                    else { termScore = 500; }
-                    break;
-            }
-            score += termScore;
-            // Solo il primo termine che ha dato un punteggio significativo viene usato per bestMatchTerm
-            if (termScore > 0 && !bestMatchTerm) bestMatchTerm = term;
-        }
-    });
-    
-    return { score, bestMatchTerm };
-}
-
-
-// Genera la spiegazione basata sul tipo di elemento e sul match
-function generateExplanation(itemType, bestMatchTerm, itemData) {
-    const term = (bestMatchTerm || '').toLowerCase();
-    const brand = (itemData.brand || '').toLowerCase();
-    const category = (itemData.productCategory || itemData.category || '').toLowerCase();
-    const name = (itemData.productName || itemData.store_name || itemData.vendor_name || itemData.title || '').toLowerCase();
-
-    const getPhrase = (key, placeholderTerm = '') => {
-        if (EXPLANATION_PHRASES[key]) {
-            return EXPLANATION_PHRASES[key].replace('[TERM]', placeholderTerm);
-        }
-        return EXPLANATION_PHRASES['default'];
-    };
-
-    switch (itemType) {
-        case 'product':
-            if (EXPLANATION_PHRASES['product_' + term]) return getPhrase('product_' + term, term);
-            if (brand && EXPLANATION_PHRASES['product_brand']) return getPhrase('product_brand', itemData.brand);
-            if (category && EXPLANATION_PHRASES['product_category']) return getPhrase('product_category', itemData.productCategory);
-            return getPhrase('product_default');
-        case 'vendor':
-            if (EXPLANATION_PHRASES['vendor_name']) return getPhrase('vendor_name', itemData.store_name || itemData.vendor_name);
-            if (category && EXPLANATION_PHRASES['vendor_category']) return getPhrase('vendor_category', itemData.category);
-            return getPhrase('vendor_default');
-        case 'offer':
-            if (EXPLANATION_PHRASES['offer_title']) return getPhrase('offer_title', itemData.title || itemData.productName);
-            return getPhrase('offer_default');
-        default:
-            return getPhrase('default');
-    }
-}
