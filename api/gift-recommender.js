@@ -1,8 +1,6 @@
 // api/gift-recommender.js
 
 const admin = require('firebase-admin');
-// NON ci serve Gemini
-// const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 try {
   if (!admin.apps.length) {
@@ -44,19 +42,28 @@ module.exports = async (req, res) => {
   try {
     const userPreferences = req.body;
     
-    console.log("Carico prodotti dei 'negozianti'...");
-    const productsSnapshot = await db.collection('global_product_catalog')
-        .where('vendorUserType', '==', 'negoziante')
-        .limit(500).get();
+    console.log("Carico fino a 1000 prodotti dal catalogo globale (senza filtri)...");
+    const productsSnapshot = await db.collection('global_product_catalog').limit(1000).get();
     
     if (productsSnapshot.empty) { 
-        console.log("Nessun prodotto 'negoziante' trovato.");
+        console.log("Il catalogo globale è vuoto.");
         return res.status(200).json([]); 
     }
     
-    const allProducts = productsSnapshot.docs
-      .map(doc => ({ id: doc.id, ...doc.data() }))
-      .filter(p => p.productName && p.price != null && p.productImageUrl); 
+    let allProductsRaw = productsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    // Filtriamo "in casa" per essere sicuri al 100%
+    const allProducts = allProductsRaw.filter(p => 
+        (p.vendorUserType === 'negoziante' || p.userType === 'negoziante') &&
+        p.productName && p.price != null && p.productImageUrl
+    );
+
+    console.log(`Trovati ${allProducts.length} prodotti validi di 'negozianti' dopo il filtro interno.`);
+    
+    if (allProducts.length === 0) {
+        console.log("Nessun prodotto di 'negozianti' trovato. Attivo Piano B sul catalogo grezzo.");
+        return res.status(200).json(getRandomProducts(allProductsRaw, 6));
+    }
 
     const searchTerms = extractKeywords(userPreferences);
     console.log(`Termini di ricerca estratti: ${searchTerms.join(', ')}`);
@@ -71,10 +78,8 @@ module.exports = async (req, res) => {
         const pCategory = (product.productCategory || '').toLowerCase();
         const pSubCategory = (product.subCategory || '').toLowerCase();
         const pKeywords = ((product.keywords || []).join(' ') + ' ' + (product.searchKeywords || []).join(' ')).toLowerCase();
-        const pDescription = (product.productDescription || '').toLowerCase();
-
+        
         searchTerms.forEach(term => {
-            // Punteggi pesati: la corrispondenza nel nome o brand vale MOLTO di più
             if (pName.includes(term) || pBrand.includes(term)) {
                 score += 10;
                 if (!bestMatchTerm) bestMatchTerm = term;
@@ -87,9 +92,6 @@ module.exports = async (req, res) => {
                 score += 2;
                 if (!bestMatchTerm) bestMatchTerm = term;
             }
-            if (pDescription.includes(term)) {
-                score += 1; // La descrizione ha il peso minore
-            }
         });
         
         if (score > 0) {
@@ -99,16 +101,17 @@ module.exports = async (req, res) => {
 
     scoredProducts.sort((a, b) => b.score - a.score);
 
-    const topProducts = scoredProducts.slice(0, 6);
+    let topProducts = scoredProducts.slice(0, 6);
     
-    if (topProducts.length === 0 && allProducts.length > 0) {
-        console.log("Nessun match con punteggio. Attivo Piano B.");
-        return res.status(200).json(getRandomProducts(allProducts, 6));
+    if (topProducts.length === 0) {
+        console.log("Nessun match con punteggio. Attivo Piano B sulla lista dei negozianti.");
+        topProducts = getRandomProducts(allProducts, 6, true); // true indica che sono già oggetti prodotto
     }
     
     const suggestions = topProducts.map(item => {
-        const product = item.product;
-        const aiExplanation = generateMagicPhrase(item.bestMatchTerm, product.brand, product.productCategory);
+        // Se item è già un prodotto (dal Piano B), usalo direttamente.
+        const product = item.product || item; 
+        const aiExplanation = item.score ? generateMagicPhrase(item.bestMatchTerm, product.brand, product.productCategory) : "Un suggerimento speciale, scelto per te.";
         return {
             id: product.id,
             name: product.productName,
@@ -137,10 +140,8 @@ function extractKeywords(prefs) {
 
 function generateMagicPhrase(term, brand, category) {
     const searchTerm = (term || '').toLowerCase();
-    const brandTerm = (brand || '').toLowerCase();
     const categoryTerm = (category || '').toLowerCase();
     
-    // Logica più specifica
     if (MAGIC_PHRASES[searchTerm]) return MAGIC_PHRASES[searchTerm];
     if (brand && MAGIC_PHRASES['brand']) return MAGIC_PHRASES['brand'].replace('[TERM]', brand);
     if (MAGIC_PHRASES[categoryTerm]) return MAGIC_PHRASES[categoryTerm];
@@ -149,15 +150,8 @@ function generateMagicPhrase(term, brand, category) {
     return MAGIC_PHRASES['default'];
 }
 
-function getRandomProducts(products, count) {
-    const shuffled = [...products].sort(() => 0.5 - Math.random());
-    const selected = shuffled.slice(0, Math.min(count, products.length));
-    
-    return selected.map(p => ({
-        id: p.id,
-        name: p.productName,
-        price: p.price,
-        imageUrl: p.productImageUrl,
-        aiExplanation: "Un suggerimento speciale, scelto per te dal nostro catalogo."
-    }));
+function getRandomProducts(products, count, isAlreadyProduct = false) {
+    const validProducts = isAlreadyProduct ? products : products.filter(p => p.productName && p.price != null && p.productImageUrl);
+    const shuffled = [...validProducts].sort(() => 0.5 - Math.random());
+    return shuffled.slice(0, Math.min(count, validProducts.length));
 }
