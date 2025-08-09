@@ -1,5 +1,5 @@
 // api/gift-recommender.js
-// IL CERVELLO DELLA RICERCA UNIVERSALE (CORRETTO - VERIFICATO)
+// IL CERVELLO DELLA RICERCA UNIVERSALE (INTUITIVO E FLESSIBILE)
 
 const admin = require('firebase-admin');
 
@@ -12,13 +12,16 @@ try {
 } catch (e) { console.error('Firebase Admin Initialization Error', e.stack); }
 const db = admin.firestore();
 
+// Parole comuni da ignorare nella ricerca, ampliate per essere più efficaci
 const STOP_WORDS = new Set([
-    'e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la',
-    'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della', 'perche', 'come', 'cosa', 'chi', 'quale', 'dove',
-    'ama', 'piacciono', 'qualsiasi', 'regalo', 'vorrei', 'fare', 'regalare', 'cerco', 'cerca', 'trova', 'mostrami',
-    'amico', 'amica', 'nipote', 'nonna', 'nonno', 'mamma', 'papa', 'figlio', 'figlia', 'fratello', 'sorella', 'collega', 'partner',
-    'nuove', 'vecchie', 'belle', 'brutte', 'buone', 'cattive', 'migliori', 'peggiori', 'di', 'marca', 'comode', 'sportive', 'eleganti',
-    'che', 'vende', 'vendono', 'venduta', 'venduto', 'in', 'citta', 'o', 'delle', 'dei', 'della', 'con', 'a', 'b'
+    'e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la', // Articoli e preposizioni
+    'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della', 'perche', 'come', 'cosa', 'chi', 'quale', 'dove', // Pronomi e interrogativi
+    'ama', 'piacciono', 'qualsiasi', 'regalo', 'vorrei', 'fare', 'regalare', 'cerco', 'cerca', 'trova', 'mostrami', // Verbi e richieste comuni
+    'amico', 'amica', 'nipote', 'nonna', 'nonno', 'mamma', 'papa', 'figlio', 'figlia', 'fratello', 'sorella', 'collega', 'partner', // Relazioni
+    'nuove', 'vecchie', 'belle', 'brutte', 'buone', 'cattive', 'migliori', 'peggiori', 'di', 'marca', 'comode', 'sportive', 'eleganti', // Aggettivi generici
+    'che', 'vende', 'vendono', 'venduta', 'venduto', 'in', 'citta', 'o', 'delle', 'dei', 'della', 'con', 'a', 'b', // Altre stop words
+    'per', 'da', 'su', 'con', 'tra', 'fra', 'se', 'io', 'lui', 'lei', 'noi', 'voi', 'loro', 'questo', 'questa', 'quelli', 'quelle', // Preposizioni e pronomi comuni
+    'devo', 'posso', 'voglio', 'bisogno' // Verbi di intento
 ]);
 
 const EXPLANATION_PHRASES = {
@@ -39,10 +42,118 @@ const EXPLANATION_PHRASES = {
     default: "Ecco alcuni suggerimenti pertinenti dalla nostra piattaforma."
 };
 
+module.exports = async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-// ==========================================================
-//  FUNZIONI DI SUPPORTO (POSIZIONATE IN CIMA)
-// ==========================================================
+  if (req.method === 'OPTIONS') { return res.status(200).end(); }
+  if (req.method !== 'POST') { return res.status(405).json({ error: 'Metodo non consentito' }); }
+
+  try {
+    const userPreferences = req.body;
+    const userQuery = (userPreferences.personDescription || '').toLowerCase().trim();
+    console.log(`Ricerca Universale: Query utente - "${userQuery}"`);
+    
+    const searchTerms = extractKeywords({ personDescription: userQuery });
+    console.log(`Termini di ricerca estratti: [${searchTerms.join(', ')}]`);
+
+    let allResults = [];
+    
+    // --- RICERCA PRODOTTI ---
+    console.log("Fase: Ricerca prodotti nel catalogo globale...");
+    const productsSnapshot = await db.collection('global_product_catalog').limit(500).get();
+    productsSnapshot.docs.forEach(doc => {
+        try {
+            const product = doc.data();
+            if (product.productName && product.price != null && product.productImageUrl && Array.isArray(product.searchableIndex) && product.searchableIndex.length > 0) {
+                const scoreData = scoreItem(product, searchTerms, 'product');
+                if (scoreData.score > 0) {
+                    allResults.push({ type: 'product', data: product, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm });
+                }
+            }
+        } catch (e) {
+            console.error(`Errore nel processare documento prodotto ${doc.id}: ${e.message}`);
+        }
+    });
+    console.log(`Risultati prodotti iniziali: ${allResults.filter(r => r.type === 'product').length}`);
+
+
+    // --- RICERCA VENDORS (Negozi/Attività) ---
+    console.log("Fase: Ricerca negozi/attività...");
+    const vendorsSnapshot = await db.collection('vendors').limit(200).get();
+    vendorsSnapshot.docs.forEach(doc => {
+        try {
+            const vendor = doc.data();
+            const vendorSearchableText = [
+                vendor.store_name, vendor.vendor_name, vendor.address, vendor.category, vendor.subCategory,
+                (vendor.tags || []).join(' '), vendor.slogan, vendor.time_info, vendor.userType
+            ].filter(Boolean).join(' ').toLowerCase();
+
+            const scoreData = scoreItem(vendor, searchTerms, 'vendor', vendorSearchableText);
+            if (scoreData.score > 0) {
+                allResults.push({ type: 'vendor', data: vendor, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm });
+            }
+        } catch (e) {
+            console.error(`Errore nel processare documento vendor ${doc.id}: ${e.message}`);
+        }
+    });
+    console.log(`Risultati vendor iniziali: ${allResults.filter(r => r.type === 'vendor').length}`);
+
+
+    // --- RICERCA OFFERS (Offerte speciali) ---
+    console.log("Fase: Ricerca offerte speciali...");
+    const offersSnapshot = await db.collection('offers').limit(100).get();
+    offersSnapshot.docs.forEach(doc => {
+        try {
+            const offer = doc.data();
+            const offerSearchableText = [
+                offer.title, offer.description, offer.promotionMessage,
+                offer.productName, offer.brand, offer.productCategory
+            ].filter(Boolean).join(' ').toLowerCase();
+
+            const scoreData = scoreItem(offer, searchTerms, 'offer', offerSearchableText);
+            if (scoreData.score > 0) {
+                allResults.push({ type: 'offer', data: offer, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm });
+            }
+        } catch (e) {
+            console.error(`Errore nel processare documento offerta ${doc.id}: ${e.message}`);
+        }
+    });
+    console.log(`Risultati offerta iniziali: ${allResults.filter(r => r.type === 'offer').length}`);
+
+    
+    // Ordina tutti i risultati combinati per punteggio
+    allResults.sort((a, b) => b.score - a.score);
+
+    let finalSuggestions = allResults.slice(0, 50);
+    
+    if (finalSuggestions.length === 0) {
+        console.log("Nessun risultato pertinente trovato. Restituisco lista vuota.");
+        return res.status(200).json([]);
+    }
+    
+    // Genera le spiegazioni per i risultati finali
+    const responseSuggestions = finalSuggestions.map(item => {
+        const explanation = generateExplanation(item.type, item.bestMatchTerm, item.data);
+        return {
+            id: item.data.id || item.id || `unknown-id-${item.type}`,
+            type: item.type,
+            data: item.data,
+            aiExplanation: explanation
+        };
+    });
+
+    console.log(`Invio ${responseSuggestions.length} risultati finali all'app.`);
+    return res.status(200).json(responseSuggestions);
+
+  } catch (error) {
+    console.error('ERRORE GRAVE GENERALE NELLA FUNZIONE:', error);
+    return res.status(500).json({ error: 'Errore interno del motore di ricerca. Controlla i log di Vercel per i dettagli.' });
+  }
+};
+
+// --- FUNZIONI DI SUPPORTO ---
 
 // Estrae parole chiave dalla query dell'utente
 function extractKeywords(userPreferences) {
@@ -65,36 +176,34 @@ function scoreItem(item, searchTerms, itemType, specificSearchableText = null) {
     let score = 0;
     let bestMatchTerm = '';
     
-    let itemSearchableWords = [];
-    if (itemType === 'product' && Array.isArray(item.searchableIndex)) {
-        itemSearchableWords = item.searchableIndex.map(w => (w || '').toLowerCase());
-    } else {
-        const text = (specificSearchableText || JSON.stringify(item)).toLowerCase();
-        itemSearchableWords = text.replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').split(' ').filter(word => word.length > 2);
-    }
-    const itemSearchableSet = new Set(itemSearchableWords);
-
+    // Combina tutte le parole del searchableIndex o il testo specifico in una singola stringa per la ricerca
+    const itemFullText = itemType === 'product' && Array.isArray(item.searchableIndex)
+        ? item.searchableIndex.join(' ').toLowerCase()
+        : (specificSearchableText || JSON.stringify(item)).toLowerCase();
 
     searchTerms.forEach(term => {
-        if (itemSearchableSet.has(term)) {
+        // Usa includes() per la flessibilità (mela vs mele, nike vs niike)
+        if (itemFullText.includes(term)) {
             let termScore = 0;
+            // Punteggi pesati in base al tipo di elemento e dove si trova il match
             switch (itemType) {
                 case 'product':
                     const pName = (item.productName || '').toLowerCase();
                     const pBrand = (item.brand || '').toLowerCase();
                     const pCategory = (item.productCategory || '').toLowerCase();
 
+                    // Controllo più granulare per la posizione del match
                     if (pName.includes(term)) { termScore = 1500; }
                     else if (pBrand.includes(term)) { termScore = 1200; }
                     else if (pCategory.includes(term)) { termScore = 800; }
-                    else { termScore = 300; }
+                    else { termScore = 300; } // Default per match in altri campi (descrizione, keywords)
                     break;
                 case 'vendor':
                     const vStoreName = (item.store_name || '').toLowerCase();
                     const vVendorName = (item.vendor_name || '').toLowerCase();
                     const vCategory = (item.category || '').toLowerCase();
 
-                    if (vStoreName.includes(term) || vVendorName.includes(term)) { termScore = 2000; }
+                    if (vStoreName.includes(term) || vVendorName.includes(term)) { termScore = 2000; } // Priorità MASSIMA per nome negozio/venditore
                     else if (vCategory.includes(term)) { termScore = 900; }
                     else { termScore = 400; }
                     break;
@@ -109,6 +218,7 @@ function scoreItem(item, searchTerms, itemType, specificSearchableText = null) {
                     break;
             }
             score += termScore;
+            // Solo il primo termine che ha dato un punteggio significativo viene usato per bestMatchTerm
             if (termScore > 0 && !bestMatchTerm) bestMatchTerm = term;
         }
     });
@@ -148,121 +258,3 @@ function generateExplanation(itemType, bestMatchTerm, itemData) {
             return getPhrase('default');
     }
 }
-
-
-// ==========================================================
-//  FUNZIONE PRINCIPALE EXPORT (module.exports)
-// ==========================================================
-module.exports = async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-  if (req.method === 'OPTIONS') { return res.status(200).end(); }
-  if (req.method !== 'POST') { return res.status(405).json({ error: 'Metodo non consentito' }); }
-
-  try {
-    const userPreferences = req.body;
-    const userQuery = (userPreferences.personDescription || '').toLowerCase().trim();
-    console.log(`Ricerca Universale: Query utente - "${userQuery}"`);
-    
-    const searchTerms = extractKeywords({ personDescription: userQuery });
-    console.log(`Termini di ricerca estratti: [${searchTerms.join(', ')}]`);
-
-    let allResults = [];
-    
-    // --- RICERCA PRODOTTI ---
-    console.log("Fase: Ricerca prodotti nel catalogo globale...");
-    const productsSnapshot = await db.collection('global_product_catalog').limit(500).get();
-    productsSnapshot.docs.forEach(doc => {
-        try {
-            const product = doc.data();
-            // Controllo più robusto su searchableIndex
-            if (product.productName && product.price != null && product.productImageUrl && Array.isArray(product.searchableIndex) && product.searchableIndex.length > 0) {
-                const scoreData = scoreItem(product, searchTerms, 'product');
-                if (scoreData.score > 0) {
-                    allResults.push({ type: 'product', data: product, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm });
-                }
-            }
-        } catch (e) {
-            console.error(`Errore nel processare documento prodotto ${doc.id}: ${e.message}`);
-        }
-    });
-    console.log(`Risultati prodotti iniziali: ${allResults.filter(r => r.type === 'product').length}`);
-
-
-    // --- RICERCA VENDORS (Negozi/Attività) ---
-    console.log("Fase: Ricerca negozi/attività...");
-    const vendorsSnapshot = await db.collection('vendors').limit(200).get();
-    vendorsSnapshot.docs.forEach(doc => {
-        try {
-            const vendor = doc.data();
-            // Creiamo un testo ricercabile al volo per il vendor
-            const vendorSearchableText = [
-                vendor.store_name, vendor.vendor_name, vendor.address, vendor.category, vendor.subCategory,
-                (vendor.tags || []).join(' '), vendor.slogan, vendor.time_info, vendor.userType
-            ].filter(Boolean).join(' ').toLowerCase();
-
-            const scoreData = scoreItem(vendor, searchTerms, 'vendor', vendorSearchableText);
-            if (scoreData.score > 0) {
-                allResults.push({ type: 'vendor', data: vendor, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm });
-            }
-        } catch (e) {
-            console.error(`Errore nel processare documento vendor ${doc.id}: ${e.message}`);
-        }
-    });
-    console.log(`Risultati vendor iniziali: ${allResults.filter(r => r.type === 'vendor').length}`);
-
-
-    // --- RICERCA OFFERS (Offerte speciali) ---
-    console.log("Fase: Ricerca offerte speciali...");
-    const offersSnapshot = await db.collection('offers').limit(100).get();
-    offersSnapshot.docs.forEach(doc => {
-        try {
-            const offer = doc.data();
-            // Creiamo un testo ricercabile al volo per l'offerta
-            const offerSearchableText = [
-                offer.title, offer.description, offer.promotionMessage,
-                offer.productName, offer.brand, offer.productCategory
-            ].filter(Boolean).join(' ').toLowerCase();
-
-            const scoreData = scoreItem(offer, searchTerms, 'offer', offerSearchableText);
-            if (scoreData.score > 0) {
-                allResults.push({ type: 'offer', data: offer, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm });
-            }
-        } catch (e) {
-            console.error(`Errore nel processare documento offerta ${doc.id}: ${e.message}`);
-        }
-    });
-    console.log(`Risultati offerta iniziali: ${allResults.filter(r => r.type === 'offer').length}`);
-
-    
-    // Ordina tutti i risultati combinati per punteggio
-    allResults.sort((a, b) => b.score - a.score);
-
-    let finalSuggestions = allResults.slice(0, 50); // Limite ragionevole per la UI dell'app
-    
-    if (finalSuggestions.length === 0) {
-        console.log("Nessun risultato pertinente trovato. Restituisco lista vuota.");
-        return res.status(200).json([]);
-    }
-    
-    // Genera le spiegazioni per i risultati finali
-    const responseSuggestions = finalSuggestions.map(item => {
-        const explanation = generateExplanation(item.type, item.bestMatchTerm, item.data);
-        return {
-            id: item.data.id || item.id || `unknown-id-${item.type}`, // Assicurati che l'ID sia sempre presente
-            type: item.type,
-            data: item.data,
-            aiExplanation: explanation
-        };
-    });
-
-    console.log(`Invio ${responseSuggestions.length} risultati finali all'app.`);
-    return res.status(200).json(responseSuggestions);
-
-  } catch (error) {
-    console.error('ERRORE GRAVE GENERALE NELLA FUNZIONE:', error);
-    return res.status(500).json({ error: 'Errore interno del motore di ricerca. Controlla i log di Vercel per i dettagli.' });
-  }
-};
