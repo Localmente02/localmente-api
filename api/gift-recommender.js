@@ -1,5 +1,5 @@
 // api/gift-recommender.js
-// IL CERVELLO DELLA RICERCA UNIVERSALE (ORDINE CORRETTO)
+// IL CERVELLO DELLA RICERCA UNIVERSALE (CORRETTO - VERIFICATO)
 
 const admin = require('firebase-admin');
 
@@ -12,17 +12,15 @@ try {
 } catch (e) { console.error('Firebase Admin Initialization Error', e.stack); }
 const db = admin.firestore();
 
-// Parole comuni da ignorare nella ricerca, ampliate per essere più efficaci
 const STOP_WORDS = new Set([
-    'e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la', // Articoli e preposizioni
-    'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della', 'perche', 'come', 'cosa', 'chi', 'quale', 'dove', // Pronomi e interrogativi
-    'ama', 'piacciono', 'qualsiasi', 'regalo', 'vorrei', 'fare', 'regalare', 'cerco', 'cerca', 'trova', 'mostrami', // Verbi e richieste comuni
-    'amico', 'amica', 'nipote', 'nonna', 'nonno', 'mamma', 'papa', 'figlio', 'figlia', 'fratello', 'sorella', 'collega', 'partner', // Relazioni
-    'nuove', 'vecchie', 'belle', 'brutte', 'buone', 'cattive', 'migliori', 'peggiori', 'di', 'marca', 'comode', 'sportive', 'eleganti', // Aggettivi generici
-    'che', 'vende', 'vendono', 'venduta', 'venduto', 'in', 'citta', 'o', 'delle', 'dei', 'della', 'con', 'a', 'b' // Parole aggiuntive rilevate nei test
+    'e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la',
+    'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della', 'perche', 'come', 'cosa', 'chi', 'quale', 'dove',
+    'ama', 'piacciono', 'qualsiasi', 'regalo', 'vorrei', 'fare', 'regalare', 'cerco', 'cerca', 'trova', 'mostrami',
+    'amico', 'amica', 'nipote', 'nonna', 'nonno', 'mamma', 'papa', 'figlio', 'figlia', 'fratello', 'sorella', 'collega', 'partner',
+    'nuove', 'vecchie', 'belle', 'brutte', 'buone', 'cattive', 'migliori', 'peggiori', 'di', 'marca', 'comode', 'sportive', 'eleganti',
+    'che', 'vende', 'vendono', 'venduta', 'venduto', 'in', 'citta', 'o', 'delle', 'dei', 'della', 'con', 'a', 'b'
 ]);
 
-// Frasi predefinite per la spiegazione dei risultati (ora più generiche/specifiche per tipo)
 const EXPLANATION_PHRASES = {
     product_brand: "Un classico intramontabile di [TERM].",
     product_sport: "L'ideale per il suo spirito sportivo e dinamico.",
@@ -43,7 +41,7 @@ const EXPLANATION_PHRASES = {
 
 
 // ==========================================================
-//  FUNZIONI DI SUPPORTO (ORA POSIZIONATE IN CIMA)
+//  FUNZIONI DI SUPPORTO (POSIZIONATE IN CIMA)
 // ==========================================================
 
 // Estrae parole chiave dalla query dell'utente
@@ -75,6 +73,7 @@ function scoreItem(item, searchTerms, itemType, specificSearchableText = null) {
         itemSearchableWords = text.replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').split(' ').filter(word => word.length > 2);
     }
     const itemSearchableSet = new Set(itemSearchableWords);
+
 
     searchTerms.forEach(term => {
         if (itemSearchableSet.has(term)) {
@@ -174,11 +173,12 @@ module.exports = async (req, res) => {
     
     // --- RICERCA PRODOTTI ---
     console.log("Fase: Ricerca prodotti nel catalogo globale...");
-    const productsSnapshot = await db.collection('global_product_catalog').limit(500).get(); // Limite a 500 per i prodotti
+    const productsSnapshot = await db.collection('global_product_catalog').limit(500).get();
     productsSnapshot.docs.forEach(doc => {
         try {
             const product = doc.data();
-            if (product.productName && product.price != null && product.productImageUrl && Array.isArray(product.searchableIndex)) {
+            // Controllo più robusto su searchableIndex
+            if (product.productName && product.price != null && product.productImageUrl && Array.isArray(product.searchableIndex) && product.searchableIndex.length > 0) {
                 const scoreData = scoreItem(product, searchTerms, 'product');
                 if (scoreData.score > 0) {
                     allResults.push({ type: 'product', data: product, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm });
@@ -193,10 +193,11 @@ module.exports = async (req, res) => {
 
     // --- RICERCA VENDORS (Negozi/Attività) ---
     console.log("Fase: Ricerca negozi/attività...");
-    const vendorsSnapshot = await db.collection('vendors').limit(200).get(); // Limite a 200 per i negozi
+    const vendorsSnapshot = await db.collection('vendors').limit(200).get();
     vendorsSnapshot.docs.forEach(doc => {
         try {
             const vendor = doc.data();
+            // Creiamo un testo ricercabile al volo per il vendor
             const vendorSearchableText = [
                 vendor.store_name, vendor.vendor_name, vendor.address, vendor.category, vendor.subCategory,
                 (vendor.tags || []).join(' '), vendor.slogan, vendor.time_info, vendor.userType
@@ -215,10 +216,11 @@ module.exports = async (req, res) => {
 
     // --- RICERCA OFFERS (Offerte speciali) ---
     console.log("Fase: Ricerca offerte speciali...");
-    const offersSnapshot = await db.collection('offers').limit(100).get(); // Limite a 100 per le offerte
+    const offersSnapshot = await db.collection('offers').limit(100).get();
     offersSnapshot.docs.forEach(doc => {
         try {
             const offer = doc.data();
+            // Creiamo un testo ricercabile al volo per l'offerta
             const offerSearchableText = [
                 offer.title, offer.description, offer.promotionMessage,
                 offer.productName, offer.brand, offer.productCategory
@@ -245,4 +247,22 @@ module.exports = async (req, res) => {
         return res.status(200).json([]);
     }
     
-    // Genera le spiegazi
+    // Genera le spiegazioni per i risultati finali
+    const responseSuggestions = finalSuggestions.map(item => {
+        const explanation = generateExplanation(item.type, item.bestMatchTerm, item.data);
+        return {
+            id: item.data.id || item.id || `unknown-id-${item.type}`, // Assicurati che l'ID sia sempre presente
+            type: item.type,
+            data: item.data,
+            aiExplanation: explanation
+        };
+    });
+
+    console.log(`Invio ${responseSuggestions.length} risultati finali all'app.`);
+    return res.status(200).json(responseSuggestions);
+
+  } catch (error) {
+    console.error('ERRORE GRAVE GENERALE NELLA FUNZIONE:', error);
+    return res.status(500).json({ error: 'Errore interno del motore di ricerca. Controlla i log di Vercel per i dettagli.' });
+  }
+};
