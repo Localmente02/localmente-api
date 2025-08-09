@@ -1,5 +1,5 @@
 // api/gift-recommender.js
-// IL CERVELLO DELLA RICERCA UNIVERSALE (FLESSIBILE CON GLI SPAZI)
+// IL CERVELLO DELLA RICERCA UNIVERSALE (FINALMENTE CON ID CORRETTO)
 
 const admin = require('firebase-admin');
 
@@ -43,57 +43,45 @@ const EXPLANATION_PHRASES = {
 
 
 // ==========================================================
-//  FUNZIONI DI SUPPORTO (POSIZIONATE IN CIMA)
+//  FUNZIONI DI SUPPORTO
 // ==========================================================
 
-// Estrae parole chiave dalla query dell'utente (MODIFICATA)
 function extractKeywords(userPreferences) {
     const text = userPreferences.personDescription || '';
     if (!text.trim()) return [];
     
-    // Pulisce il testo e lo divide in parole separate da spazio singolo
     const cleanedText = text.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
     const rawWords = cleanedText.split(' ');
     
     const uniqueKeywords = new Set();
     
-    // Aggiungi le parole singole (filtrando le stop words)
-    rawWords.forEach(word => {
+    for (let i = 0; i < rawWords.length; i++) {
+        const word = rawWords[i];
         if (word.length > 2 && !STOP_WORDS.has(word)) {
             uniqueKeywords.add(word);
         }
-    });
-
-    // Aggiungi le frasi multi-parola e le loro versioni compattate (senza spazi)
-    for (let i = 0; i < rawWords.length; i++) {
-        for (let j = i + 1; j < Math.min(i + 4, rawWords.length + 1); j++) { // Considera frasi fino a 3 parole
+        for (let j = i + 1; j < Math.min(i + 4, rawWords.length + 1); j++) {
             const phrase = rawWords.slice(i, j).join(' ');
-            if (phrase.length > 2 && !STOP_WORDS.has(phrase)) { // Filtra anche le frasi stop words
-                uniqueKeywords.add(phrase); // Esempio: "barsi sport"
-                uniqueKeywords.add(phrase.replace(/\s/g, '')); // Esempio: "barsisport"
+            if (phrase.length > 2 && !STOP_WORDS.has(phrase)) {
+                uniqueKeywords.add(phrase);
+                uniqueKeywords.add(phrase.replace(/\s/g, ''));
             }
         }
     }
-
     return Array.from(uniqueKeywords);
 }
 
-
-// Assegna un punteggio a un singolo elemento (prodotto, vendor, offer)
 function scoreItem(item, searchTerms, itemType, specificSearchableText = null) {
     let score = 0;
     let bestMatchTerm = '';
     
-    // Combina tutte le parole del searchableIndex o il testo specifico in una singola stringa per la ricerca
     const itemFullText = itemType === 'product' && Array.isArray(item.searchableIndex)
-        ? item.searchableIndex.join(' ').toLowerCase() // searchIndex è già un array di parole pulite
+        ? item.searchableIndex.join(' ').toLowerCase()
         : (specificSearchableText || JSON.stringify(item)).toLowerCase();
 
     searchTerms.forEach(term => {
-        // Usa includes() per la flessibilità (mela vs mele, nike vs niike, barsisport vs barsi sport)
         if (itemFullText.includes(term)) {
             let termScore = 0;
-            // Punteggi pesati in base al tipo di elemento e dove si trova il match
             switch (itemType) {
                 case 'product':
                     const pName = (item.productName || '').toLowerCase();
@@ -132,8 +120,6 @@ function scoreItem(item, searchTerms, itemType, specificSearchableText = null) {
     return { score, bestMatchTerm };
 }
 
-
-// Genera la spiegazione basata sul tipo di elemento e sul match
 function generateExplanation(itemType, bestMatchTerm, itemData) {
     const term = (bestMatchTerm || '').toLowerCase();
     const brand = (itemData.brand || '').toLowerCase();
@@ -193,6 +179,8 @@ module.exports = async (req, res) => {
     productsSnapshot.docs.forEach(doc => {
         try {
             const product = doc.data();
+            // === QUI LA MODIFICA: AGGIUNGIAMO doc.id a data ===
+            product.id = doc.id; // Aggiungi l'ID del documento Firestore ai dati del prodotto
             if (product.productName && product.price != null && product.productImageUrl && Array.isArray(product.searchableIndex) && product.searchableIndex.length > 0) {
                 const scoreData = scoreItem(product, searchTerms, 'product');
                 if (scoreData.score > 0) {
@@ -212,6 +200,8 @@ module.exports = async (req, res) => {
     vendorsSnapshot.docs.forEach(doc => {
         try {
             const vendor = doc.data();
+            // === QUI LA MODIFICA: AGGIUNGIAMO doc.id a data ===
+            vendor.id = doc.id; // Aggiungi l'ID del documento Firestore ai dati del vendor
             const vendorSearchableText = [
                 vendor.store_name, vendor.vendor_name, vendor.address, vendor.category, vendor.subCategory,
                 (vendor.tags || []).join(' '), vendor.slogan, vendor.time_info, vendor.userType
@@ -227,6 +217,24 @@ module.exports = async (req, res) => {
     });
     console.log(`Risultati vendor iniziali: ${allResults.filter(r => r.type === 'vendor').length}`);
 
+
+    // ==========================================================
+    //  RICERCA OFFERTE SPECIALI (RIMOSSA) - se in futuro ci sarà una vera collezione "offerte_speciali"
+    // ==========================================================
+    // console.log("Fase: Ricerca offerte speciali (se esiste una collezione dedicata)...");
+    // const offersSnapshot = await db.collection('offers').limit(100).get();
+    // offersSnapshot.docs.forEach(doc => {
+    //     try {
+    //         const offer = doc.data();
+    //         offer.id = doc.id; // Aggiungi l'ID del documento Firestore ai dati dell'offerta
+    //         const offerSearchableText = [ offer.title, offer.description, offer.promotionMessage, offer.productName, offer.brand, offer.productCategory ].filter(Boolean).join(' ').toLowerCase();
+    //         const scoreData = scoreItem(offer, searchTerms, 'offer', offerSearchableText);
+    //         if (scoreData.score > 0) { allResults.push({ type: 'offer', data: offer, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm }); }
+    //     } catch (e) { console.error(`Errore nel processare documento offerta ${doc.id}: ${e.message}`); }
+    // });
+    // console.log(`Risultati offerta iniziali: ${allResults.filter(r => r.type === 'offer').length}`);
+
+    
     // Ordina tutti i risultati combinati per punteggio
     allResults.sort((a, b) => b.score - a.score);
 
@@ -241,7 +249,7 @@ module.exports = async (req, res) => {
     const responseSuggestions = finalSuggestions.map(item => {
         const explanation = generateExplanation(item.type, item.bestMatchTerm, item.data);
         return {
-            id: item.data.id || item.id || `unknown-id-${item.type}`,
+            id: item.data.id || `unknown-id-${item.type}`, // L'ID è ora garantito in item.data
             type: item.type,
             data: item.data,
             aiExplanation: explanation
