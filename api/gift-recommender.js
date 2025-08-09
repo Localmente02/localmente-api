@@ -227,29 +227,6 @@ module.exports = async (req, res) => {
     });
     console.log(`Risultati vendor iniziali: ${allResults.filter(r => r.type === 'vendor').length}`);
 
-
-    // --- RICERCA OFFERS (Offerte speciali) ---
-    console.log("Fase: Ricerca offerte speciali...");
-    const offersSnapshot = await db.collection('offers').limit(100).get();
-    offersSnapshot.docs.forEach(doc => {
-        try {
-            const offer = doc.data();
-            const offerSearchableText = [
-                offer.title, offer.description, offer.promotionMessage,
-                offer.productName, offer.brand, offer.productCategory
-            ].filter(Boolean).join(' ').toLowerCase();
-
-            const scoreData = scoreItem(offer, searchTerms, 'offer', offerSearchableText);
-            if (scoreData.score > 0) {
-                allResults.push({ type: 'offer', data: offer, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm });
-            }
-        } catch (e) {
-            console.error(`Errore nel processare documento offerta ${doc.id}: ${e.message}`);
-        }
-    });
-    console.log(`Risultati offerta iniziali: ${allResults.filter(r => r.type === 'offer').length}`);
-
-    
     // Ordina tutti i risultati combinati per punteggio
     allResults.sort((a, b) => b.score - a.score);
 
