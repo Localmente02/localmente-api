@@ -1,8 +1,7 @@
 // api/gift-recommender.js
 
 const admin = require('firebase-admin');
-
-// Non ci serve più l'AI di Google
+// NON ci serve Gemini
 // const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 try {
@@ -14,31 +13,23 @@ try {
 } catch (e) { console.error('Firebase Admin Initialization Error', e.stack); }
 const db = admin.firestore();
 
-// Non ci serve più l'AI di Google
-// const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-// const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+const STOP_WORDS = new Set(['e','un','una','di','a','da','in','con','su','per','tra','fra','gli','le','i','il','lo','la','mio','tuo','suo','un\'','degli','del','della','ama','piacciono','qualsiasi','regalo','vorrei','fare','regalare','amico','amica','nipote','nonna','nonno','mamma','papà']);
 
-const STOP_WORDS = new Set(['e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la', 'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della', 'ama', 'piacciono', 'qualsiasi', 'regalo', 'vorrei', 'fare', 'regalare']);
-
-// Dizionario per le frasi magiche
 const MAGIC_PHRASES = {
-    // Priorità alta: basate su parole chiave specifiche
     brand: "Per chi ama lo stile inconfondibile di [TERM].",
     sport: "L'ideale per il suo spirito sportivo e dinamico.",
     running: "Perfetto per macinare chilometri con stile.",
     calcio: "Per veri tifosi e amanti del gioco di squadra.",
     trekking: "Per le sue avventure all'aria aperta.",
-    neonato: "Un pensiero speciale per dare il benvenuto al nuovo arrivato.",
+    neonato: "Un pensiero speciale per dare il benvenuto.",
     bambino: "Per stimolare la sua fantasia e il gioco.",
-    nonna: "Un regalo che unisce comfort e un tocco di eleganza.",
-    mamma: "Un pensiero speciale per ringraziarla di tutto.",
-    // Priorità media: basate sulle categorie
+    donna: "Un tocco di stile pensato apposta per lei.",
+    uomo: "Un regalo pratico e di stile per lui.",
     default_category: "Un'ottima scelta dalla categoria [TERM].",
     Scarpe: "Per chi non rinuncia mai allo stile, passo dopo passo.",
-    Zaini: "Il compagno perfetto per ogni avventura quotidiana.",
+    Zaini: "Il compagno perfetto per ogni avventura.",
     Abbigliamento: "Per rinnovare il suo look con un tocco di stile.",
     Orologi: "Per scandire il tempo con eleganza e precisione.",
-    // Frase di default se non troviamo nulla di specifico
     default: "Un suggerimento pensato apposta per te."
 };
 
@@ -56,8 +47,7 @@ module.exports = async (req, res) => {
     console.log("Carico prodotti dei 'negozianti'...");
     const productsSnapshot = await db.collection('global_product_catalog')
         .where('vendorUserType', '==', 'negoziante')
-        .limit(500)
-        .get();
+        .limit(500).get();
     
     if (productsSnapshot.empty) { 
         console.log("Nessun prodotto 'negoziante' trovato.");
@@ -71,67 +61,54 @@ module.exports = async (req, res) => {
     const searchTerms = extractKeywords(userPreferences);
     console.log(`Termini di ricerca estratti: ${searchTerms.join(', ')}`);
     
-    // --- IL NUOVO CERVELLO A PUNTI ---
     let scoredProducts = [];
-
     allProducts.forEach(product => {
         let score = 0;
-        let matchReason = null; // Per capire perché ha vinto
+        let bestMatchTerm = '';
 
-        const productText = [
-            product.productName, product.brand, product.productDescription,
-            product.shortDescription, product.productCategory, product.subCategory,
-            (product.keywords || []).join(' '), (product.searchKeywords || []).join(' '),
-            (product.productTags || []).join(' '), (product.tags || []).join(' '),
-            (product.productColors || []).join(' ')
-        ].filter(Boolean).join(' ').toLowerCase();
+        const pName = (product.productName || '').toLowerCase();
+        const pBrand = (product.brand || '').toLowerCase();
+        const pCategory = (product.productCategory || '').toLowerCase();
+        const pSubCategory = (product.subCategory || '').toLowerCase();
+        const pKeywords = ((product.keywords || []).join(' ') + ' ' + (product.searchKeywords || []).join(' ')).toLowerCase();
+        const pDescription = (product.productDescription || '').toLowerCase();
 
-        if (searchTerms.length > 0) {
-            searchTerms.forEach(term => {
-                if (productText.includes(term)) {
-                    // Diamo più punti se la parola è nel nome o nel brand
-                    if ((product.productName || '').toLowerCase().includes(term) || (product.brand || '').toLowerCase().includes(term)) {
-                        score += 5;
-                        if (!matchReason) matchReason = product.brand ? 'brand' : 'productName'; // La ragione più importante
-                    } else {
-                        score += 1;
-                        if (!matchReason) matchReason = 'keyword';
-                    }
-                }
-            });
-        }
+        searchTerms.forEach(term => {
+            // Punteggi pesati: la corrispondenza nel nome o brand vale MOLTO di più
+            if (pName.includes(term) || pBrand.includes(term)) {
+                score += 10;
+                if (!bestMatchTerm) bestMatchTerm = term;
+            }
+            if (pCategory.includes(term) || pSubCategory.includes(term)) {
+                score += 5;
+                if (!bestMatchTerm) bestMatchTerm = product.productCategory || term;
+            }
+            if (pKeywords.includes(term)) {
+                score += 2;
+                if (!bestMatchTerm) bestMatchTerm = term;
+            }
+            if (pDescription.includes(term)) {
+                score += 1; // La descrizione ha il peso minore
+            }
+        });
         
         if (score > 0) {
-            scoredProducts.push({ product, score, matchReason });
+            scoredProducts.push({ product, score, bestMatchTerm });
         }
     });
 
-    // Ordiniamo i prodotti per punteggio
     scoredProducts.sort((a, b) => b.score - a.score);
 
-    // Prendiamo i migliori 6
     const topProducts = scoredProducts.slice(0, 6);
     
-    // Se non abbiamo trovato nulla, prendiamo 6 prodotti a caso (PIANO B)
     if (topProducts.length === 0 && allProducts.length > 0) {
-        console.log("Nessun match trovato, attivo il Piano B con prodotti casuali.");
-        const randomProducts = getRandomProducts(allProducts, 6);
-        return res.status(200).json(randomProducts);
+        console.log("Nessun match con punteggio. Attivo Piano B.");
+        return res.status(200).json(getRandomProducts(allProducts, 6));
     }
     
-    // --- CREIAMO LA RISPOSTA CON LE FRASI MAGICHE ---
     const suggestions = topProducts.map(item => {
         const product = item.product;
-        
-        // Cerca la parola chiave che ha fatto scattare il match per la frase
-        const winningTerm = searchTerms.find(term => 
-            (product.brand || '').toLowerCase().includes(term) || 
-            (product.productCategory || '').toLowerCase().includes(term) ||
-            term === item.matchReason
-        );
-
-        const aiExplanation = generateMagicPhrase(winningTerm, product.brand, product.productCategory);
-
+        const aiExplanation = generateMagicPhrase(item.bestMatchTerm, product.brand, product.productCategory);
         return {
             id: product.id,
             name: product.productName,
@@ -159,18 +136,16 @@ function extractKeywords(prefs) {
 }
 
 function generateMagicPhrase(term, brand, category) {
-    if (term && MAGIC_PHRASES[term]) {
-        return MAGIC_PHRASES[term];
-    }
-    if (brand && MAGIC_PHRASES['brand']) {
-        return MAGIC_PHRASES['brand'].replace('[TERM]', brand);
-    }
-    if (category && MAGIC_PHRASES[category]) {
-        return MAGIC_PHRASES[category];
-    }
-    if (category && MAGIC_PHRASES['default_category']) {
-        return MAGIC_PHRASES['default_category'].replace('[TERM]', category);
-    }
+    const searchTerm = (term || '').toLowerCase();
+    const brandTerm = (brand || '').toLowerCase();
+    const categoryTerm = (category || '').toLowerCase();
+    
+    // Logica più specifica
+    if (MAGIC_PHRASES[searchTerm]) return MAGIC_PHRASES[searchTerm];
+    if (brand && MAGIC_PHRASES['brand']) return MAGIC_PHRASES['brand'].replace('[TERM]', brand);
+    if (MAGIC_PHRASES[categoryTerm]) return MAGIC_PHRASES[categoryTerm];
+    if (category && MAGIC_PHRASES['default_category']) return MAGIC_PHRASES['default_category'].replace('[TERM]', category);
+    
     return MAGIC_PHRASES['default'];
 }
 
