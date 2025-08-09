@@ -1,5 +1,5 @@
 // api/gift-recommender.js
-// IL CERVELLO DELLA RICERCA UNIVERSALE (FINALMENTE CON ID CORRETTO)
+// IL CERVELLO DELLA RICERCA UNIVERSALE (LIMITI RIDOTTI PER LE QUOTE)
 
 const admin = require('firebase-admin');
 
@@ -175,11 +175,11 @@ module.exports = async (req, res) => {
     
     // --- RICERCA PRODOTTI ---
     console.log("Fase: Ricerca prodotti nel catalogo globale...");
-    const productsSnapshot = await db.collection('global_product_catalog').limit(500).get();
+    // Ridotto il limite a 50 per evitare di esaurire la quota durante i test intensivi
+    const productsSnapshot = await db.collection('global_product_catalog').limit(50).get();
     productsSnapshot.docs.forEach(doc => {
         try {
             const product = doc.data();
-            // === QUI LA MODIFICA: AGGIUNGIAMO doc.id a data ===
             product.id = doc.id; // Aggiungi l'ID del documento Firestore ai dati del prodotto
             if (product.productName && product.price != null && product.productImageUrl && Array.isArray(product.searchableIndex) && product.searchableIndex.length > 0) {
                 const scoreData = scoreItem(product, searchTerms, 'product');
@@ -196,11 +196,11 @@ module.exports = async (req, res) => {
 
     // --- RICERCA VENDORS (Negozi/Attività) ---
     console.log("Fase: Ricerca negozi/attività...");
-    const vendorsSnapshot = await db.collection('vendors').limit(200).get();
+    // Ridotto il limite a 20 per evitare di esaurire la quota durante i test intensivi
+    const vendorsSnapshot = await db.collection('vendors').limit(20).get();
     vendorsSnapshot.docs.forEach(doc => {
         try {
             const vendor = doc.data();
-            // === QUI LA MODIFICA: AGGIUNGIAMO doc.id a data ===
             vendor.id = doc.id; // Aggiungi l'ID del documento Firestore ai dati del vendor
             const vendorSearchableText = [
                 vendor.store_name, vendor.vendor_name, vendor.address, vendor.category, vendor.subCategory,
@@ -219,7 +219,8 @@ module.exports = async (req, res) => {
 
 
     // ==========================================================
-    //  RICERCA OFFERTE SPECIALI (RIMOSSA) - se in futuro ci sarà una vera collezione "offerte_speciali"
+    //  RICERCA OFFERTE SPECIALI (RIMOSSA) - Se in futuro ci sarà una vera collezione "offerte_speciali"
+    //  e non sono i prodotti dei negozianti, questa logica andrà qui.
     // ==========================================================
     // console.log("Fase: Ricerca offerte speciali (se esiste una collezione dedicata)...");
     // const offersSnapshot = await db.collection('offers').limit(100).get();
@@ -238,7 +239,7 @@ module.exports = async (req, res) => {
     // Ordina tutti i risultati combinati per punteggio
     allResults.sort((a, b) => b.score - a.score);
 
-    let finalSuggestions = allResults.slice(0, 50);
+    let finalSuggestions = allResults.slice(0, 50); // Limite ragionevole per la UI dell'app
     
     if (finalSuggestions.length === 0) {
         console.log("Nessun risultato pertinente trovato. Restituisco lista vuota.");
@@ -249,7 +250,7 @@ module.exports = async (req, res) => {
     const responseSuggestions = finalSuggestions.map(item => {
         const explanation = generateExplanation(item.type, item.bestMatchTerm, item.data);
         return {
-            id: item.data.id || `unknown-id-${item.type}`, // L'ID è ora garantito in item.data
+            id: item.data.id, // L'ID è ora garantito in item.data
             type: item.type,
             data: item.data,
             aiExplanation: explanation
