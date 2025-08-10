@@ -1,5 +1,5 @@
 // api/gift-recommender.js
-// IL CERVELLO DELLA RICERCA UNIVERSALE (CON RILEVAMENTO INTENZIONE)
+// IL CERVELLO DELLA RICERCA UNIVERSALE (FINALMENTE CON ID CORRETTO)
 
 const admin = require('firebase-admin');
 
@@ -20,7 +20,7 @@ const STOP_WORDS = new Set([
     'nuove', 'vecchie', 'belle', 'brutte', 'buone', 'cattive', 'migliori', 'peggiori', 'di', 'marca', 'comode', 'sportive', 'eleganti',
     'che', 'vende', 'vendono', 'venduta', 'venduto', 'in', 'citta', 'o', 'delle', 'dei', 'della', 'con', 'a', 'b',
     'per', 'da', 'su', 'con', 'tra', 'fra', 'se', 'io', 'lui', 'lei', 'noi', 'voi', 'loro', 'questo', 'questa', 'quelli', 'quelle',
-    'devo', 'posso', 'voglio', 'bisogno', 'via', 'piazza', 'corso', 'viale', 'strada' // Aggiunte parole per indirizzi/luoghi
+    'devo', 'posso', 'voglio', 'bisogno'
 ]);
 
 const EXPLANATION_PHRASES = {
@@ -33,7 +33,6 @@ const EXPLANATION_PHRASES = {
 
     vendor_name: "Il negozio [TERM] ha esattamente ciò che cerchi.",
     vendor_category: "Un'attività specializzata in [TERM] vicino a te.",
-    vendor_address: "Abbiamo trovato un'attività in [TERM] che potrebbe interessarti.",
     vendor_default: "Scopri questo negozio: potrebbe avere quello che cerchi.",
 
     offer_title: "Non perderti l'offerta: [TERM]!",
@@ -44,39 +43,9 @@ const EXPLANATION_PHRASES = {
 
 
 // ==========================================================
-//  NUOVE FUNZIONI DI SUPPORTO PER IL RILEVAMENTO INTENZIONE
+//  FUNZIONI DI SUPPORTO
 // ==========================================================
 
-function detectIntent(userQuery, searchTerms) {
-    const query = userQuery.toLowerCase();
-
-    // Regole per rilevare l'intenzione
-    // Priorità alta: Termini specifici o categorie
-    if (searchTerms.includes('farmacia') || searchTerms.includes('farmaci')) return 'pharmacy';
-    if (searchTerms.includes('alimentari') || searchTerms.includes('cibo') || searchTerms.includes('kit') || searchTerms.includes('carbonara') || searchTerms.includes('pasta') || searchTerms.includes('pane') || searchTerms.includes('verdura') || searchTerms.includes('frutta')) return 'food_grocery';
-    if (searchTerms.includes('artigiano') || searchTerms.includes('creazione') || searchTerms.includes('fattoamano')) return 'artisan';
-    if (searchTerms.includes('meccanico') || searchTerms.includes('gommista') || searchTerms.includes('elettrauto')) return 'service_vehicle';
-    if (searchTerms.includes('idraulico') || searchTerms.includes('elettricista') || searchTerms.includes('casa')) return 'service_home';
-    if (searchTerms.includes('parrucchiere') || searchTerms.includes('estetista') || searchTerms.includes('benessere')) return 'service_wellness';
-    if (searchTerms.includes('noleggio')) return 'rental';
-    if (searchTerms.includes('bar') || searchTerms.includes('colazione')) return 'bar';
-
-    // Priorità media: Ricerca di un negozio per nome o indirizzo
-    const addressKeywords = ['via', 'piazza', 'corso', 'viale', 'strada', 'largo', 'vicolo'];
-    if (addressKeywords.some(keyword => query.includes(keyword)) || query.split(' ').length <= 2 && !searchTerms.some(t => ['scarpe', 'orologio', 'zaino'].includes(t))) { // Se la query è corta e sembra un indirizzo o un nome di negozio
-        return 'vendor_general';
-    }
-
-    // Priorità bassa: Se non rientra in categorie specifiche, è un prodotto generico o un'offerta
-    // Se la query include parole come "sconto", "offerta", "promozione"
-    if (searchTerms.includes('sconto') || searchTerms.includes('offerta') || searchTerms.includes('promozione')) return 'offer';
-
-
-    // Default: Prodotto generico
-    return 'product_general';
-}
-
-// Estrae parole chiave dalla query dell'utente
 function extractKeywords(userPreferences) {
     const text = userPreferences.personDescription || '';
     if (!text.trim()) return [];
@@ -86,13 +55,11 @@ function extractKeywords(userPreferences) {
     
     const uniqueKeywords = new Set();
     
-    rawWords.forEach(word => {
+    for (let i = 0; i < rawWords.length; i++) {
+        const word = rawWords[i];
         if (word.length > 2 && !STOP_WORDS.has(word)) {
             uniqueKeywords.add(word);
         }
-    });
-
-    for (let i = 0; i < rawWords.length; i++) {
         for (let j = i + 1; j < Math.min(i + 4, rawWords.length + 1); j++) {
             const phrase = rawWords.slice(i, j).join(' ');
             if (phrase.length > 2 && !STOP_WORDS.has(phrase)) {
@@ -104,7 +71,6 @@ function extractKeywords(userPreferences) {
     return Array.from(uniqueKeywords);
 }
 
-// Assegna un punteggio a un singolo elemento (prodotto, vendor, offer)
 function scoreItem(item, searchTerms, itemType, specificSearchableText = null) {
     let score = 0;
     let bestMatchTerm = '';
@@ -131,11 +97,9 @@ function scoreItem(item, searchTerms, itemType, specificSearchableText = null) {
                     const vStoreName = (item.store_name || '').toLowerCase();
                     const vVendorName = (item.vendor_name || '').toLowerCase();
                     const vCategory = (item.category || '').toLowerCase();
-                    const vAddress = (item.address || '').toLowerCase(); // Per indirizzi
-                    
+
                     if (vStoreName.includes(term) || vVendorName.includes(term)) { termScore = 2000; }
                     else if (vCategory.includes(term)) { termScore = 900; }
-                    else if (vAddress.includes(term)) { termScore = 1500; } // Indirizzo ha alta priorità per negozi
                     else { termScore = 400; }
                     break;
                 case 'offer':
@@ -177,7 +141,6 @@ function generateExplanation(itemType, bestMatchTerm, itemData) {
             return getPhrase('product_default');
         case 'vendor':
             if (EXPLANATION_PHRASES['vendor_name']) return getPhrase('vendor_name', itemData.store_name || itemData.vendor_name);
-            if (EXPLANATION_PHRASES['vendor_address'] && itemData.address && (term.includes('via') || term.includes('piazza'))) return getPhrase('vendor_address', itemData.address);
             if (category && EXPLANATION_PHRASES['vendor_category']) return getPhrase('vendor_category', itemData.category);
             return getPhrase('vendor_default');
         case 'offer':
@@ -210,92 +173,83 @@ module.exports = async (req, res) => {
 
     let allResults = [];
     
-    // Rileva l'intenzione dell'utente
-    const intent = detectIntent(userQuery, searchTerms);
-    console.log(`Intenzione rilevata: ${intent}`);
-
-    // === RICERCA CONDIZIONALE BASATA SULL'INTENZIONE ===
-    if (intent === 'vendor_general' || intent === 'pharmacy' || intent === 'food_grocery' || intent === 'artisan' || intent === 'service_vehicle' || intent === 'service_home' || intent === 'service_wellness' || intent === 'rental' || intent === 'bar') {
-        console.log(`Eseguo ricerca mirata per negozi/attività (${intent})...`);
-        let vendorsQuery = db.collection('vendors');
-        
-        // Filtri per userType specifici se l'intenzione è molto chiara
-        if (intent === 'pharmacy') vendorsQuery = vendorsQuery.where('userType', '==', 'farmacia');
-        else if (intent === 'food_grocery') vendorsQuery = vendorsQuery.where('userType', '==', 'alimentari');
-        else if (intent === 'artisan') vendorsQuery = vendorsQuery.where('userType', '==', 'artigiano');
-        else if (intent === 'service_vehicle' || intent === 'service_home' || intent === 'service_wellness' || intent === 'rental' || intent === 'bar') {
-            vendorsQuery = vendorsQuery.where('userType', '==', 'multi'); // Tutti i servizi e bar sono 'multi'
-        }
-
-        const vendorsSnapshot = await vendorsQuery.limit(50).get(); // Limite più generoso per negozi mirati
-        vendorsSnapshot.docs.forEach(doc => {
-            try {
-                const vendor = doc.data();
-                vendor.id = doc.id;
-                const vendorSearchableText = [
-                    vendor.store_name, vendor.vendor_name, vendor.address, vendor.category, vendor.subCategory,
-                    (vendor.tags || []).join(' '), vendor.slogan, vendor.time_info, vendor.userType
-                ].filter(Boolean).join(' ').toLowerCase();
-
-                const scoreData = scoreItem(vendor, searchTerms, 'vendor', vendorSearchableText);
+    // --- RICERCA PRODOTTI ---
+    console.log("Fase: Ricerca prodotti nel catalogo globale...");
+    const productsSnapshot = await db.collection('global_product_catalog').limit(500).get();
+    productsSnapshot.docs.forEach(doc => {
+        try {
+            const product = doc.data();
+            // === QUI LA MODIFICA: AGGIUNGIAMO doc.id a data ===
+            product.id = doc.id; // Aggiungi l'ID del documento Firestore ai dati del prodotto
+            if (product.productName && product.price != null && product.productImageUrl && Array.isArray(product.searchableIndex) && product.searchableIndex.length > 0) {
+                const scoreData = scoreItem(product, searchTerms, 'product');
                 if (scoreData.score > 0) {
-                    allResults.push({ type: 'vendor', data: vendor, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm });
+                    allResults.push({ type: 'product', data: product, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm });
                 }
-            } catch (e) { console.error(`Errore nel processare documento vendor ${doc.id}: ${e.message}`); }
-        });
-        console.log(`Risultati vendor mirati: ${allResults.filter(r => r.type === 'vendor').length}`);
-
-        // Se cerchiamo un negozio specifico, potremmo anche voler i suoi prodotti come secondari
-        // Questa è una logica complessa, per ora priorità al negozio.
-    }
-
-    if (intent === 'product_general' || allResults.length < 5) { // Se l'intenzione è generica o abbiamo pochi risultati
-        console.log("Fase: Ricerca prodotti nel catalogo globale (generica o di riempimento)...");
-        const productsSnapshot = await db.collection('global_product_catalog').limit(100).get(); // Limite aumentato per più prodotti
-        productsSnapshot.docs.forEach(doc => {
-            try {
-                const product = doc.data();
-                product.id = doc.id;
-                if (product.productName && product.price != null && product.productImageUrl && Array.isArray(product.searchableIndex) && product.searchableIndex.length > 0) {
-                    const scoreData = scoreItem(product, searchTerms, 'product');
-                    if (scoreData.score > 0) {
-                        allResults.push({ type: 'product', data: product, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm });
-                    }
-                }
-            } catch (e) { console.error(`Errore nel processare documento prodotto ${doc.id}: ${e.message}`); }
-        });
-        console.log(`Risultati prodotti generali: ${allResults.filter(r => r.type === 'product').length}`);
-    }
-
-    // Le offerte (sezione 'offers' vera e propria) possono essere cercate a prescindere o solo se l'intenzione è 'offer'
-    // Per ora le manteniamo fuori, come da nostra ultima decisione.
-    // Se avrai una collezione 'special_offers_reali', la cercheremo qui.
-
-    // Rimuovi duplicati (se un prodotto/vendor/offerta appare due volte) e ordina
-    const uniqueResults = new Map();
-    allResults.forEach(result => {
-        // Usa una chiave unica combinata per identificare i duplicati (es. 'product_ID', 'vendor_ID')
-        const uniqueKey = `${result.type}_${result.id}`;
-        // Sovrascrivi solo se il nuovo elemento ha un punteggio più alto
-        if (!uniqueResults.has(uniqueKey) || uniqueResults.get(uniqueKey).score < result.score) {
-            uniqueResults.set(uniqueKey, result);
+            }
+        } catch (e) {
+            console.error(`Errore nel processare documento prodotto ${doc.id}: ${e.message}`);
         }
     });
+    console.log(`Risultati prodotti iniziali: ${allResults.filter(r => r.type === 'product').length}`);
 
-    let finalSortedResults = Array.from(uniqueResults.values()).sort((a, b) => b.score - a.score);
 
-    // Limitiamo a 50 risultati finali per non sovraccaricare l'app
-    let finalSuggestions = finalSortedResults.slice(0, 50); 
+    // --- RICERCA VENDORS (Negozi/Attività) ---
+    console.log("Fase: Ricerca negozi/attività...");
+    const vendorsSnapshot = await db.collection('vendors').limit(200).get();
+    vendorsSnapshot.docs.forEach(doc => {
+        try {
+            const vendor = doc.data();
+            // === QUI LA MODIFICA: AGGIUNGIAMO doc.id a data ===
+            vendor.id = doc.id; // Aggiungi l'ID del documento Firestore ai dati del vendor
+            const vendorSearchableText = [
+                vendor.store_name, vendor.vendor_name, vendor.address, vendor.category, vendor.subCategory,
+                (vendor.tags || []).join(' '), vendor.slogan, vendor.time_info, vendor.userType
+            ].filter(Boolean).join(' ').toLowerCase();
+
+            const scoreData = scoreItem(vendor, searchTerms, 'vendor', vendorSearchableText);
+            if (scoreData.score > 0) {
+                allResults.push({ type: 'vendor', data: vendor, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm });
+            }
+        } catch (e) {
+            console.error(`Errore nel processare documento vendor ${doc.id}: ${e.message}`);
+        }
+    });
+    console.log(`Risultati vendor iniziali: ${allResults.filter(r => r.type === 'vendor').length}`);
+
+
+    // ==========================================================
+    //  RICERCA OFFERTE SPECIALI (RIMOSSA) - se in futuro ci sarà una vera collezione "offerte_speciali"
+    // ==========================================================
+    // console.log("Fase: Ricerca offerte speciali (se esiste una collezione dedicata)...");
+    // const offersSnapshot = await db.collection('offers').limit(100).get();
+    // offersSnapshot.docs.forEach(doc => {
+    //     try {
+    //         const offer = doc.data();
+    //         offer.id = doc.id; // Aggiungi l'ID del documento Firestore ai dati dell'offerta
+    //         const offerSearchableText = [ offer.title, offer.description, offer.promotionMessage, offer.productName, offer.brand, offer.productCategory ].filter(Boolean).join(' ').toLowerCase();
+    //         const scoreData = scoreItem(offer, searchTerms, 'offer', offerSearchableText);
+    //         if (scoreData.score > 0) { allResults.push({ type: 'offer', data: offer, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm }); }
+    //     } catch (e) { console.error(`Errore nel processare documento offerta ${doc.id}: ${e.message}`); }
+    // });
+    // console.log(`Risultati offerta iniziali: ${allResults.filter(r => r.type === 'offer').length}`);
+
+    
+    // Ordina tutti i risultati combinati per punteggio
+    allResults.sort((a, b) => b.score - a.score);
+
+    let finalSuggestions = allResults.slice(0, 50);
     
     if (finalSuggestions.length === 0) {
         console.log("Nessun risultato pertinente trovato. Restituisco lista vuota.");
         return res.status(200).json([]);
     }
     
+    // Genera le spiegazioni per i risultati finali
     const responseSuggestions = finalSuggestions.map(item => {
         const explanation = generateExplanation(item.type, item.bestMatchTerm, item.data);
         return {
-            id: item.data.id || `unknown-id-${item.type}`,
+            id: item.data.id || `unknown-id-${item.type}`, // L'ID è ora garantito in item.data
             type: item.type,
             data: item.data,
             aiExplanation: explanation
