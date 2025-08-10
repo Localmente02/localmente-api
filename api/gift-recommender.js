@@ -1,266 +1,92 @@
 // api/gift-recommender.js
-// IL CERVELLO DELLA RICERCA UNIVERSALE (FINALMENTE CON ID CORRETTO)
+// VERSIONE 2.0 - FORNITORE DI DATI PER LA CACHE UNIVERSALE
+// Questo cervello non fa più calcoli. Il suo unico scopo è scaricare
+// TUTTI i documenti rilevanti da Firebase e passarli all'app.
 
 const admin = require('firebase-admin');
 
+// Inizializzazione sicura di Firebase Admin
 try {
   if (!admin.apps.length) {
     admin.initializeApp({
       credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY)),
     });
   }
-} catch (e) { console.error('Firebase Admin Initialization Error', e.stack); }
+} catch (e) {
+  console.error('Firebase Admin Initialization Error', e.stack);
+}
 const db = admin.firestore();
 
-const STOP_WORDS = new Set([
-    'e', 'un', 'una', 'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'gli', 'le', 'i', 'il', 'lo', 'la',
-    'mio', 'tuo', 'suo', 'un\'', 'degli', 'del', 'della', 'perche', 'come', 'cosa', 'chi', 'quale', 'dove',
-    'ama', 'piacciono', 'qualsiasi', 'regalo', 'vorrei', 'fare', 'regalare', 'cerco', 'cerca', 'trova', 'mostrami',
-    'amico', 'amica', 'nipote', 'nonna', 'nonno', 'mamma', 'papa', 'figlio', 'figlia', 'fratello', 'sorella', 'collega', 'partner',
-    'nuove', 'vecchie', 'belle', 'brutte', 'buone', 'cattive', 'migliori', 'peggiori', 'di', 'marca', 'comode', 'sportive', 'eleganti',
-    'che', 'vende', 'vendono', 'venduta', 'venduto', 'in', 'citta', 'o', 'delle', 'dei', 'della', 'con', 'a', 'b',
-    'per', 'da', 'su', 'con', 'tra', 'fra', 'se', 'io', 'lui', 'lei', 'noi', 'voi', 'loro', 'questo', 'questa', 'quelli', 'quelle',
-    'devo', 'posso', 'voglio', 'bisogno'
-]);
 
-const EXPLANATION_PHRASES = {
-    product_brand: "Un classico intramontabile di [TERM].",
-    product_sport: "L'ideale per il suo spirito sportivo e dinamico.",
-    product_neonato: "Un pensiero speciale per dare il benvenuto al nuovo arrivato.",
-    product_bambino: "Per stimolare la sua fantasia e il gioco.",
-    product_category: "Un'ottima scelta dalla categoria [TERM].",
-    product_default: "Un prodotto di qualità in linea con la tua ricerca.",
+// La funzione helper ora recupera un'intera collezione senza limiti.
+const fetchAllFromCollection = async (collectionName, type) => {
+  try {
+    console.log(`Inizio recupero di TUTTI i documenti da '${collectionName}'...`);
+    const snapshot = await db.collection(collectionName).get();
+    
+    if (snapshot.empty) {
+      console.log(`Nessun documento trovato in '${collectionName}'.`);
+      return [];
+    }
+    
+    const results = snapshot.docs.map(doc => {
+      return {
+        id: doc.id,   // L'ID del documento è la cosa più importante
+        type: type,   // Il tipo (product, vendor, offer)
+        data: doc.data() // Tutti i dati del documento
+      };
+    });
 
-    vendor_name: "Il negozio [TERM] ha esattamente ciò che cerchi.",
-    vendor_category: "Un'attività specializzata in [TERM] vicino a te.",
-    vendor_default: "Scopri questo negozio: potrebbe avere quello che cerchi.",
-
-    offer_title: "Non perderti l'offerta: [TERM]!",
-    offer_default: "Un'opportunità da non perdere, proprio quello che cercavi.",
-
-    default: "Ecco alcuni suggerimenti pertinenti dalla nostra piattaforma."
+    console.log(`Recuperati ${results.length} documenti da '${collectionName}'.`);
+    return results;
+  } catch (error) {
+    console.error(`Errore durante il recupero dalla collezione '${collectionName}':`, error);
+    // In caso di errore per una collezione, restituiamo un array vuoto per non bloccare tutto.
+    return [];
+  }
 };
 
 
-// ==========================================================
-//  FUNZIONI DI SUPPORTO
-// ==========================================================
-
-function extractKeywords(userPreferences) {
-    const text = userPreferences.personDescription || '';
-    if (!text.trim()) return [];
-    
-    const cleanedText = text.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
-    const rawWords = cleanedText.split(' ');
-    
-    const uniqueKeywords = new Set();
-    
-    for (let i = 0; i < rawWords.length; i++) {
-        const word = rawWords[i];
-        if (word.length > 2 && !STOP_WORDS.has(word)) {
-            uniqueKeywords.add(word);
-        }
-        for (let j = i + 1; j < Math.min(i + 4, rawWords.length + 1); j++) {
-            const phrase = rawWords.slice(i, j).join(' ');
-            if (phrase.length > 2 && !STOP_WORDS.has(phrase)) {
-                uniqueKeywords.add(phrase);
-                uniqueKeywords.add(phrase.replace(/\s/g, ''));
-            }
-        }
-    }
-    return Array.from(uniqueKeywords);
-}
-
-function scoreItem(item, searchTerms, itemType, specificSearchableText = null) {
-    let score = 0;
-    let bestMatchTerm = '';
-    
-    const itemFullText = itemType === 'product' && Array.isArray(item.searchableIndex)
-        ? item.searchableIndex.join(' ').toLowerCase()
-        : (specificSearchableText || JSON.stringify(item)).toLowerCase();
-
-    searchTerms.forEach(term => {
-        if (itemFullText.includes(term)) {
-            let termScore = 0;
-            switch (itemType) {
-                case 'product':
-                    const pName = (item.productName || '').toLowerCase();
-                    const pBrand = (item.brand || '').toLowerCase();
-                    const pCategory = (item.productCategory || '').toLowerCase();
-
-                    if (pName.includes(term)) { termScore = 1500; }
-                    else if (pBrand.includes(term)) { termScore = 1200; }
-                    else if (pCategory.includes(term)) { termScore = 800; }
-                    else { termScore = 300; }
-                    break;
-                case 'vendor':
-                    const vStoreName = (item.store_name || '').toLowerCase();
-                    const vVendorName = (item.vendor_name || '').toLowerCase();
-                    const vCategory = (item.category || '').toLowerCase();
-
-                    if (vStoreName.includes(term) || vVendorName.includes(term)) { termScore = 2000; }
-                    else if (vCategory.includes(term)) { termScore = 900; }
-                    else { termScore = 400; }
-                    break;
-                case 'offer':
-                    const oTitle = (item.title || '').toLowerCase();
-                    const oProdName = (item.productName || '').toLowerCase();
-                    const oBrand = (item.brand || '').toLowerCase();
-                    
-                    if (oTitle.includes(term)) { termScore = 1800; }
-                    else if (oProdName.includes(term) || oBrand.includes(term)) { termScore = 1000; }
-                    else { termScore = 500; }
-                    break;
-            }
-            score += termScore;
-            if (termScore > 0 && !bestMatchTerm) bestMatchTerm = term;
-        }
-    });
-    
-    return { score, bestMatchTerm };
-}
-
-function generateExplanation(itemType, bestMatchTerm, itemData) {
-    const term = (bestMatchTerm || '').toLowerCase();
-    const brand = (itemData.brand || '').toLowerCase();
-    const category = (itemData.productCategory || itemData.category || '').toLowerCase();
-    const name = (itemData.productName || itemData.store_name || itemData.vendor_name || itemData.title || '').toLowerCase();
-
-    const getPhrase = (key, placeholderTerm = '') => {
-        if (EXPLANATION_PHRASES[key]) {
-            return EXPLANATION_PHRASES[key].replace('[TERM]', placeholderTerm);
-        }
-        return EXPLANATION_PHRASES['default'];
-    };
-
-    switch (itemType) {
-        case 'product':
-            if (EXPLANATION_PHRASES['product_' + term]) return getPhrase('product_' + term, term);
-            if (brand && EXPLANATION_PHRASES['product_brand']) return getPhrase('product_brand', itemData.brand);
-            if (category && EXPLANATION_PHRASES['product_category']) return getPhrase('product_category', itemData.productCategory);
-            return getPhrase('product_default');
-        case 'vendor':
-            if (EXPLANATION_PHRASES['vendor_name']) return getPhrase('vendor_name', itemData.store_name || itemData.vendor_name);
-            if (category && EXPLANATION_PHRASES['vendor_category']) return getPhrase('vendor_category', itemData.category);
-            return getPhrase('vendor_default');
-        case 'offer':
-            if (EXPLANATION_PHRASES['offer_title']) return getPhrase('offer_title', itemData.title || itemData.productName);
-            return getPhrase('offer_default');
-        default:
-            return getPhrase('default');
-    }
-}
-
-
-// ==========================================================
-//  FUNZIONE PRINCIPALE EXPORT (module.exports)
-// ==========================================================
 module.exports = async (req, res) => {
+  // Impostazioni CORS per permettere all'app di chiamare l'API
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-  if (req.method === 'OPTIONS') { return res.status(200).end(); }
-  if (req.method !== 'POST') { return res.status(405).json({ error: 'Metodo non consentito' }); }
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Metodo non consentito' });
+  }
 
   try {
-    const userPreferences = req.body;
-    const userQuery = (userPreferences.personDescription || '').toLowerCase().trim();
-    console.log(`Ricerca Universale: Query utente - "${userQuery}"`);
+    // La query non viene più usata per filtrare, ma solo per avviare il processo.
+    console.log("Richiesta ricevuta per popolare la cache universale.");
+
+    // Eseguiamo tutte le chiamate a Firebase in parallelo per massima velocità
+    const [products, vendors /*, offers*/] = await Promise.all([
+      fetchAllFromCollection('global_product_catalog', 'product'),
+      fetchAllFromCollection('vendors', 'vendor'),
+      // Se avrai una collezione 'special_offers', decommenta questa riga
+      // fetchAllFromCollection('special_offers', 'offer'), 
+    ]);
+
+    // Combiniamo tutti i risultati in un unico grande array
+    const allResults = [
+        ...products, 
+        ...vendors
+        /*, ...offers*/
+    ];
     
-    const searchTerms = extractKeywords({ personDescription: userQuery });
-    console.log(`Termini di ricerca estratti: [${searchTerms.join(', ')}]`);
+    console.log(`Totale risultati combinati: ${allResults.length}. Invio all'app...`);
 
-    let allResults = [];
-    
-    // --- RICERCA PRODOTTI ---
-    console.log("Fase: Ricerca prodotti nel catalogo globale...");
-    const productsSnapshot = await db.collection('global_product_catalog').limit(500).get();
-    productsSnapshot.docs.forEach(doc => {
-        try {
-            const product = doc.data();
-            // === QUI LA MODIFICA: AGGIUNGIAMO doc.id a data ===
-            product.id = doc.id; // Aggiungi l'ID del documento Firestore ai dati del prodotto
-            if (product.productName && product.price != null && product.productImageUrl && Array.isArray(product.searchableIndex) && product.searchableIndex.length > 0) {
-                const scoreData = scoreItem(product, searchTerms, 'product');
-                if (scoreData.score > 0) {
-                    allResults.push({ type: 'product', data: product, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm });
-                }
-            }
-        } catch (e) {
-            console.error(`Errore nel processare documento prodotto ${doc.id}: ${e.message}`);
-        }
-    });
-    console.log(`Risultati prodotti iniziali: ${allResults.filter(r => r.type === 'product').length}`);
-
-
-    // --- RICERCA VENDORS (Negozi/Attività) ---
-    console.log("Fase: Ricerca negozi/attività...");
-    const vendorsSnapshot = await db.collection('vendors').limit(200).get();
-    vendorsSnapshot.docs.forEach(doc => {
-        try {
-            const vendor = doc.data();
-            // === QUI LA MODIFICA: AGGIUNGIAMO doc.id a data ===
-            vendor.id = doc.id; // Aggiungi l'ID del documento Firestore ai dati del vendor
-            const vendorSearchableText = [
-                vendor.store_name, vendor.vendor_name, vendor.address, vendor.category, vendor.subCategory,
-                (vendor.tags || []).join(' '), vendor.slogan, vendor.time_info, vendor.userType
-            ].filter(Boolean).join(' ').toLowerCase();
-
-            const scoreData = scoreItem(vendor, searchTerms, 'vendor', vendorSearchableText);
-            if (scoreData.score > 0) {
-                allResults.push({ type: 'vendor', data: vendor, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm });
-            }
-        } catch (e) {
-            console.error(`Errore nel processare documento vendor ${doc.id}: ${e.message}`);
-        }
-    });
-    console.log(`Risultati vendor iniziali: ${allResults.filter(r => r.type === 'vendor').length}`);
-
-
-    // ==========================================================
-    //  RICERCA OFFERTE SPECIALI (RIMOSSA) - se in futuro ci sarà una vera collezione "offerte_speciali"
-    // ==========================================================
-    // console.log("Fase: Ricerca offerte speciali (se esiste una collezione dedicata)...");
-    // const offersSnapshot = await db.collection('offers').limit(100).get();
-    // offersSnapshot.docs.forEach(doc => {
-    //     try {
-    //         const offer = doc.data();
-    //         offer.id = doc.id; // Aggiungi l'ID del documento Firestore ai dati dell'offerta
-    //         const offerSearchableText = [ offer.title, offer.description, offer.promotionMessage, offer.productName, offer.brand, offer.productCategory ].filter(Boolean).join(' ').toLowerCase();
-    //         const scoreData = scoreItem(offer, searchTerms, 'offer', offerSearchableText);
-    //         if (scoreData.score > 0) { allResults.push({ type: 'offer', data: offer, score: scoreData.score, bestMatchTerm: scoreData.bestMatchTerm }); }
-    //     } catch (e) { console.error(`Errore nel processare documento offerta ${doc.id}: ${e.message}`); }
-    // });
-    // console.log(`Risultati offerta iniziali: ${allResults.filter(r => r.type === 'offer').length}`);
-
-    
-    // Ordina tutti i risultati combinati per punteggio
-    allResults.sort((a, b) => b.score - a.score);
-
-    let finalSuggestions = allResults.slice(0, 50);
-    
-    if (finalSuggestions.length === 0) {
-        console.log("Nessun risultato pertinente trovato. Restituisco lista vuota.");
-        return res.status(200).json([]);
-    }
-    
-    // Genera le spiegazioni per i risultati finali
-    const responseSuggestions = finalSuggestions.map(item => {
-        const explanation = generateExplanation(item.type, item.bestMatchTerm, item.data);
-        return {
-            id: item.data.id || `unknown-id-${item.type}`, // L'ID è ora garantito in item.data
-            type: item.type,
-            data: item.data,
-            aiExplanation: explanation
-        };
-    });
-
-    console.log(`Invio ${responseSuggestions.length} risultati finali all'app.`);
-    return res.status(200).json(responseSuggestions);
+    // Inviamo l'array completo all'app. L'app si occuperà di salvarlo in cache.
+    // Il formato è stato semplificato: non c'è più `aiExplanation`, verrà generato nell'app.
+    return res.status(200).json(allResults);
 
   } catch (error) {
-    console.error('ERRORE GRAVE GENERALE NELLA FUNZIONE:', error);
-    return res.status(500).json({ error: 'Errore interno del motore di ricerca. Controlla i log di Vercel per i dettagli.' });
+    console.error('ERRORE GRAVE GENERALE NELLA FUNZIONE DI FETCH:', error);
+    return res.status(500).json({ error: 'Errore interno del fornitore di dati. Controlla i log di Vercel.' });
   }
 };
