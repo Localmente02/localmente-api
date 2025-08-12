@@ -1,30 +1,33 @@
 // File: api/get-available-slots.js
-
 const admin = require('firebase-admin');
-// <<< LA NOSTRA "SPIA" >>>
-// Stampiamo nei log di Vercel l'inizio e la fine della chiave per vedere la sua formattazione.
-console.log("--- INIZIO CHIAVE PRIVATA ---");
-console.log(process.env.FIREBASE_PRIVATE_KEY);
-console.log("--- FINE CHIAVE PRIVATA ---");
-// <<< FINE SPIA >>>
-
-// <<< MODIFICA CHIRURGICA: Cambiamo il modo in cui inizializziamo l'app >>>
-// Invece di usare admin.credential.cert(), passiamo direttamente le variabili d'ambiente.
-// Questo metodo è più robusto negli ambienti serverless come Vercel e spesso risolve
-// problemi di decodifica legati a OpenSSL/crypto.
-const serviceAccount = {
-  projectId: process.env.FIREBASE_PROJECT_ID,
-  clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-  privateKey: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
-};
 
 if (!admin.apps.length) {
   try {
+    // Tentativo #1: Leggiamo l'intero JSON da UNA variabile d'ambiente.
+    // Cambia 'FIREBASE_SERVICE_ACCOUNT_JSON' con il nome della tua variabile se è diverso.
+    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.FIREBASE_PRIVATE_KEY;
+    const serviceAccount = JSON.parse(serviceAccountJson);
+
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
     });
-  } catch (error) {
-    console.error('Firebase admin initialization error', error);
+    console.log("Firebase inizializzato con successo usando l'intero JSON.");
+
+  } catch (e) {
+    // Se il Tentativo #1 fallisce, proviamo con le chiavi separate (Metodo #2)
+    console.warn("Inizializzazione da JSON fallita, provo con le variabili separate...");
+    try {
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+        }),
+      });
+      console.log("Firebase inizializzato con successo usando le variabili separate.");
+    } catch (error) {
+      console.error('ERRORE DEFINITIVO: Inizializzazione Firebase fallita con entrambi i metodi.', error);
+    }
   }
 }
 
