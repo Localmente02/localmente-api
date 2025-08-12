@@ -1,39 +1,32 @@
-// Importa Firebase Admin SDK per parlare con Firestore dal server
+// File: api/get-available-slots.js
+
+// Usiamo la stessa sintassi delle tue altre funzioni per coerenza
 const admin = require('firebase-admin');
 
-// Configurazione di Firebase Admin (assicurati che le tue credenziali siano nelle variabili d'ambiente di Vercel)
-// Vercel solitamente gestisce questo in automatico se hai collegato il progetto
+// La configurazione di Firebase Admin è già gestita a livello di progetto Vercel
+// grazie alle variabili d'ambiente. Ci assicuriamo solo che sia inizializzata.
 if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-    }),
-  });
+  try {
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      }),
+    });
+  } catch (error) {
+    console.error('Firebase admin initialization error', error);
+  }
 }
 
 const db = admin.firestore();
 
-// Funzione principale che verrà eseguita da Vercel
+// Funzione principale, come le altre tue
 module.exports = async (req, res) => {
-  // Imposta i permessi CORS per permettere al tuo sito di chiamare questa funzione
-  res.setHeader('Access-Control-Allow-Credentials', true);
-  res.setHeader('Access-Control-Allow-Origin', '*'); // O specifica il tuo dominio per più sicurezza
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
-  );
+  // La gestione CORS è centralizzata in vercel.json, quindi non serve qui.
 
-  // Se è una richiesta OPTIONS (pre-flight CORS), rispondi subito
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
-  }
-  
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Metodo non consentito' });
+    return res.status(405).json({ error: 'Metodo non consentito. Utilizzare POST.' });
   }
 
   try {
@@ -45,20 +38,31 @@ module.exports = async (req, res) => {
 
     // 1. Recupera i dati del servizio per conoscere la durata
     const serviceDoc = await db.collection('offers').doc(serviceId).get();
-    if (!serviceDoc.exists) {
-      return res.status(404).json({ error: 'Servizio non trovato.' });
+    if (!serviceDoc.exists || !serviceDoc.data().serviceDuration) {
+      return res.status(404).json({ error: 'Servizio non trovato o senza una durata specificata.' });
     }
-    const serviceDuration = serviceDoc.data().serviceDuration; // in minuti
+    const serviceDuration = serviceDoc.data().serviceDuration;
 
     // 2. Recupera gli orari di apertura del vendor
-    // Per ora simuliamo, in futuro li prenderemo da `vendors/{vendorId}`
-    const openingHours = { start: 9, end: 19 }; // Dalle 9:00 alle 19:00
+    const vendorDoc = await db.collection('vendors').doc(vendorId).get();
+    if (!vendorDoc.exists || !vendorDoc.data().opening_hours_structured) {
+        // Orari di default se non specificati, per non bloccare tutto
+        return res.status(200).json({ slots: [], message: 'Orari di apertura non configurati.' });
+    }
+    
+    const dateObj = new Date(date);
+    const dayOfWeek = ["Dom", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab"][dateObj.getUTCDay()];
+    const todayHours = vendorDoc.data().opening_hours_structured.find(d => d.day === dayOfWeek);
+
+    if (!todayHours || !todayHours.isOpen) {
+        return res.status(200).json({ slots: [], message: 'Negozio chiuso in questa data.' });
+    }
 
     // 3. Recupera tutte le prenotazioni per quel giorno
     const startOfDay = new Date(date);
-    startOfDay.setHours(0, 0, 0, 0);
+    startOfDay.setUTCHours(0, 0, 0, 0);
     const endOfDay = new Date(date);
-    endOfDay.setHours(23, 59, 59, 999);
+    endOfDay.setUTCHours(23, 59, 59, 999);
 
     const bookingsSnapshot = await db.collection('bookings')
       .where('vendorId', '==', vendorId)
@@ -66,58 +70,53 @@ module.exports = async (req, res) => {
       .where('startTime', '<=', endOfDay)
       .get();
     
-    const existingBookings = bookingsSnapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        start: data.startTime.toDate(),
-        end: data.endTime.toDate(),
-      };
-    });
+    const existingBookings = bookingsSnapshot.docs.map(doc => ({
+      start: doc.data().startTime.toDate(),
+      end: doc.data().endTime.toDate(),
+    }));
 
     // 4. Calcola gli slot disponibili
     const availableSlots = [];
     const slotIncrement = 15; // Controlliamo ogni 15 minuti
 
-    let currentTime = new Date(startOfDay);
-    currentTime.setHours(openingHours.start, 0, 0, 0);
-    
-    const endOfWorkDay = new Date(startOfDay);
-    endOfWorkDay.setHours(openingHours.end, 0, 0, 0);
+    // Cicla attraverso le fasce orarie del giorno (es. mattina e pomeriggio)
+    for (const slot of todayHours.slots) {
+        const [startHour, startMinute] = slot.from.split(':').map(Number);
+        const [endHour, endMinute] = slot.to.split(':').map(Number);
 
-    while (currentTime < endOfWorkDay) {
-      const potentialEndTime = new Date(currentTime.getTime() + serviceDuration * 60000);
+        let currentTime = new Date(startOfDay);
+        currentTime.setUTCHours(startHour, startMinute, 0, 0);
+        
+        const endOfWorkSlot = new Date(startOfDay);
+        endOfWorkSlot.setUTCHours(endHour, endMinute, 0, 0);
 
-      // Controlla se lo slot finisce dopo l'orario di chiusura
-      if (potentialEndTime > endOfWorkDay) {
-        break; 
-      }
+        while (currentTime < endOfWorkSlot) {
+            const potentialEndTime = new Date(currentTime.getTime() + serviceDuration * 60000);
 
-      // Controlla se si sovrappone con prenotazioni esistenti
-      let isOverlap = false;
-      for (const booking of existingBookings) {
-        if (
-          (currentTime < booking.end && potentialEndTime > booking.start)
-        ) {
-          isOverlap = true;
-          break;
+            if (potentialEndTime > endOfWorkSlot) break;
+
+            let isOverlap = false;
+            for (const booking of existingBookings) {
+                if (currentTime < booking.end && potentialEndTime > booking.start) {
+                    isOverlap = true;
+                    break;
+                }
+            }
+
+            if (!isOverlap) {
+                const hours = String(currentTime.getUTCHours()).padStart(2, '0');
+                const minutes = String(currentTime.getUTCMinutes()).padStart(2, '0');
+                availableSlots.push(`${hours}:${minutes}`);
+            }
+            
+            currentTime.setUTCMinutes(currentTime.getUTCMinutes() + slotIncrement);
         }
-      }
-
-      if (!isOverlap) {
-        const hours = String(currentTime.getHours()).padStart(2, '0');
-        const minutes = String(currentTime.getMinutes()).padStart(2, '0');
-        availableSlots.push(`${hours}:${minutes}`);
-      }
-      
-      // Passa al prossimo slot
-      currentTime.setMinutes(currentTime.getMinutes() + slotIncrement);
     }
     
-    // 5. Rispondi con la lista degli slot
     res.status(200).json({ slots: availableSlots });
 
   } catch (error) {
-    console.error('Errore nella funzione get-available-slots:', error);
-    res.status(500).json({ error: 'Errore interno del server.' });
+    console.error('Errore in get-available-slots:', error);
+    res.status(500).json({ error: 'Errore interno del server.', details: error.message });
   }
 };
