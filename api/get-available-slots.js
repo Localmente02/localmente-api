@@ -1,10 +1,7 @@
 // File: api/get-available-slots.js
 
-// Usiamo la stessa sintassi delle tue altre funzioni per coerenza
 const admin = require('firebase-admin');
 
-// La configurazione di Firebase Admin è già gestita a livello di progetto Vercel
-// grazie alle variabili d'ambiente. Ci assicuriamo solo che sia inizializzata.
 if (!admin.apps.length) {
   try {
     admin.initializeApp({
@@ -21,9 +18,16 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
-// Funzione principale, come le altre tue
 module.exports = async (req, res) => {
-  // La gestione CORS è centralizzata in vercel.json, quindi non serve qui.
+
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', 'https://localmente-v3-core.web.app');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    return res.status(200).end();
+  }
+
+  res.setHeader('Access-Control-Allow-Origin', 'https://localmente-v3-core.web.app');
 
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Metodo non consentito. Utilizzare POST.' });
@@ -36,21 +40,19 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: 'Dati mancanti: vendorId, serviceId, e date sono richiesti.' });
     }
 
-    // 1. Recupera i dati del servizio per conoscere la durata
+  
     const serviceDoc = await db.collection('offers').doc(serviceId).get();
     if (!serviceDoc.exists || !serviceDoc.data().serviceDuration) {
       return res.status(404).json({ error: 'Servizio non trovato o senza una durata specificata.' });
     }
     const serviceDuration = serviceDoc.data().serviceDuration;
 
-    // 2. Recupera gli orari di apertura del vendor
     const vendorDoc = await db.collection('vendors').doc(vendorId).get();
     if (!vendorDoc.exists || !vendorDoc.data().opening_hours_structured) {
-        // Orari di default se non specificati, per non bloccare tutto
         return res.status(200).json({ slots: [], message: 'Orari di apertura non configurati.' });
     }
     
-    const dateObj = new Date(date);
+    const dateObj = new Date(date + 'T00:00:00Z'); // Assicuriamo che sia UTC
     const dayOfWeek = ["Dom", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab"][dateObj.getUTCDay()];
     const todayHours = vendorDoc.data().opening_hours_structured.find(d => d.day === dayOfWeek);
 
@@ -58,11 +60,8 @@ module.exports = async (req, res) => {
         return res.status(200).json({ slots: [], message: 'Negozio chiuso in questa data.' });
     }
 
-    // 3. Recupera tutte le prenotazioni per quel giorno
-    const startOfDay = new Date(date);
-    startOfDay.setUTCHours(0, 0, 0, 0);
-    const endOfDay = new Date(date);
-    endOfDay.setUTCHours(23, 59, 59, 999);
+    const startOfDay = new Date(date + 'T00:00:00Z');
+    const endOfDay = new Date(date + 'T23:59:59Z');
 
     const bookingsSnapshot = await db.collection('bookings')
       .where('vendorId', '==', vendorId)
@@ -75,19 +74,18 @@ module.exports = async (req, res) => {
       end: doc.data().endTime.toDate(),
     }));
 
-    // 4. Calcola gli slot disponibili
     const availableSlots = [];
-    const slotIncrement = 15; // Controlliamo ogni 15 minuti
+    const slotIncrement = 15;
 
-    // Cicla attraverso le fasce orarie del giorno (es. mattina e pomeriggio)
     for (const slot of todayHours.slots) {
+        if (!slot.from || !slot.to) continue;
         const [startHour, startMinute] = slot.from.split(':').map(Number);
         const [endHour, endMinute] = slot.to.split(':').map(Number);
 
-        let currentTime = new Date(startOfDay);
+        let currentTime = new Date(date + 'T00:00:00Z');
         currentTime.setUTCHours(startHour, startMinute, 0, 0);
         
-        const endOfWorkSlot = new Date(startOfDay);
+        const endOfWorkSlot = new Date(date + 'T00:00:00Z');
         endOfWorkSlot.setUTCHours(endHour, endMinute, 0, 0);
 
         while (currentTime < endOfWorkSlot) {
