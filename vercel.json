@@ -24,6 +24,8 @@
     { "source": "/api/generate-imagekit-token", "destination": "/api/generate-imagekit-token.js" },
     { "source": "/api/get-stripe-balance-and-transactions", "destination": "/api/get-stripe-balance-and-transactions.js" },
     { "source": "/api/gift-recommender", "destination": "/api/gift-recommender.js" },
+
+    { "source": "/api/get-available-slots", "destination": "/api/get-available-slots.js" },
     { "source": "/api/webhook", "destination": "/api/webhook.js" }
   ]
 }
