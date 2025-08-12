@@ -3,38 +3,24 @@ const admin = require('firebase-admin');
 
 if (!admin.apps.length) {
   try {
-    // Tentativo #1: Leggiamo l'intero JSON da UNA variabile d'ambiente.
-    // Cambia 'FIREBASE_SERVICE_ACCOUNT_JSON' con il nome della tua variabile se è diverso.
-    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.FIREBASE_PRIVATE_KEY;
-    const serviceAccount = JSON.parse(serviceAccountJson);
+    // Leggiamo l'intero JSON dalla TUA variabile 'FIREBASE_SERVICE_ACCOUNT_KEY'
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
 
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
     });
-    console.log("Firebase inizializzato con successo usando l'intero JSON.");
-
-  } catch (e) {
-    // Se il Tentativo #1 fallisce, proviamo con le chiavi separate (Metodo #2)
-    console.warn("Inizializzazione da JSON fallita, provo con le variabili separate...");
-    try {
-      admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId: process.env.FIREBASE_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
-        }),
-      });
-      console.log("Firebase inizializzato con successo usando le variabili separate.");
-    } catch (error) {
-      console.error('ERRORE DEFINITIVO: Inizializzazione Firebase fallita con entrambi i metodi.', error);
-    }
+    
+  } catch (error) {
+    console.error('ERRORE DEFINITIVO: Inizializzazione Firebase fallita.', error);
+    // Se fallisce qui, il problema è al 100% nel contenuto della variabile d'ambiente.
   }
 }
 
 const db = admin.firestore();
 
-// Funzione principale, come le altre tue
+// Funzione principale che verrà eseguita da Vercel
 module.exports = async (req, res) => {
+  // Gestione della richiesta "pre-flight" OPTIONS per la policy CORS
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', 'https://localmente-v3-core.web.app');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -42,6 +28,7 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
 
+  // Aggiungiamo l'header anche per la risposta POST
   res.setHeader('Access-Control-Allow-Origin', 'https://localmente-v3-core.web.app');
 
   if (req.method !== 'POST') {
@@ -49,25 +36,26 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // ... il resto del codice rimane assolutamente identico ...
     const { vendorId, serviceId, date } = req.body;
 
     if (!vendorId || !serviceId || !date) {
       return res.status(400).json({ error: 'Dati mancanti: vendorId, serviceId, e date sono richiesti.' });
     }
 
+    // 1. Recupera i dati del servizio per conoscere la durata
     const serviceDoc = await db.collection('offers').doc(serviceId).get();
     if (!serviceDoc.exists || !serviceDoc.data().serviceDuration) {
       return res.status(404).json({ error: 'Servizio non trovato o senza una durata specificata.' });
     }
     const serviceDuration = serviceDoc.data().serviceDuration;
 
+    // 2. Recupera gli orari di apertura del vendor
     const vendorDoc = await db.collection('vendors').doc(vendorId).get();
     if (!vendorDoc.exists || !vendorDoc.data().opening_hours_structured) {
         return res.status(200).json({ slots: [], message: 'Orari di apertura non configurati.' });
     }
     
-    const dateObj = new Date(date + 'T00:00:00Z');
+    const dateObj = new Date(date + 'T00:00:00Z'); // Assicuriamo che sia UTC
     const dayOfWeek = ["Dom", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab"][dateObj.getUTCDay()];
     const todayHours = vendorDoc.data().opening_hours_structured.find(d => d.day === dayOfWeek);
 
@@ -75,6 +63,7 @@ module.exports = async (req, res) => {
         return res.status(200).json({ slots: [], message: 'Negozio chiuso in questa data.' });
     }
 
+    // 3. Recupera tutte le prenotazioni per quel giorno
     const startOfDay = new Date(date + 'T00:00:00Z');
     const endOfDay = new Date(date + 'T23:59:59Z');
 
@@ -89,6 +78,7 @@ module.exports = async (req, res) => {
       end: doc.data().endTime.toDate(),
     }));
 
+    // 4. Calcola gli slot disponibili
     const availableSlots = [];
     const slotIncrement = 15;
 
@@ -105,6 +95,7 @@ module.exports = async (req, res) => {
 
         while (currentTime < endOfWorkSlot) {
             const potentialEndTime = new Date(currentTime.getTime() + serviceDuration * 60000);
+
             if (potentialEndTime > endOfWorkSlot) break;
 
             let isOverlap = false;
@@ -125,6 +116,7 @@ module.exports = async (req, res) => {
         }
     }
     
+    // 5. Rispondi con la lista degli slot
     res.status(200).json({ slots: availableSlots });
 
   } catch (error) {
