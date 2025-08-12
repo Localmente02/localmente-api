@@ -1,6 +1,12 @@
 // File: api/get-available-slots.js
 
 const admin = require('firebase-admin');
+// <<< LA NOSTRA "SPIA" >>>
+// Stampiamo nei log di Vercel l'inizio e la fine della chiave per vedere la sua formattazione.
+console.log("--- INIZIO CHIAVE PRIVATA ---");
+console.log(process.env.FIREBASE_PRIVATE_KEY);
+console.log("--- FINE CHIAVE PRIVATA ---");
+// <<< FINE SPIA >>>
 
 // <<< MODIFICA CHIRURGICA: Cambiamo il modo in cui inizializziamo l'app >>>
 // Invece di usare admin.credential.cert(), passiamo direttamente le variabili d'ambiente.
