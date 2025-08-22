@@ -15,6 +15,10 @@
     {
       "path": "/api/clean_expired_offers",
       "schedule": "0 3 * * 1"
+    },
+    {
+      "path": "/api/update_vehicle_status",
+      "schedule": "0 * * * *"
     }
   ],
   "rewrites": [
@@ -25,6 +29,7 @@
     { "source": "/api/get-available-slots", "destination": "/api/get-available-slots.js" },
     { "source": "/api/get-stripe-balance-and-transactions", "destination": "/api/get-stripe-balance-and-transactions.js" },
     { "source": "/api/gift-recommender", "destination": "/api/gift-recommender.js" },
-    { "source": "/api/webhook", "destination": "/api/webhook.js" }
+    { "source": "/api/webhook", "destination": "/api/webhook.js" },
+    { "source": "/api/update_vehicle_status", "destination": "/api/update-vehicle-status.js" }
   ]
 }
