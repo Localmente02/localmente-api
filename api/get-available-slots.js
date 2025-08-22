@@ -29,38 +29,64 @@ module.exports = async (req, res) => {
   try {
     const { bookingType, vendorId } = req.body;
 
-    // ==========================================================
-    // === NUOVO "SMISTATORE": CAPIAMO COSA FARE ===
-    // ==========================================================
-    if (bookingType === 'rental') {
-      // --- LOGICA PER IL NOLEGGIO VEICOLI ---
-      const { vehicleId, startDate, endDate } = req.body;
-      if (!vendorId || !vehicleId || !startDate || !endDate) {
-        return res.status(400).json({ error: 'Dati mancanti per la verifica del noleggio.' });
+    if (bookingType === 'rental_fleet_check') {
+      const { startDate, endDate } = req.body;
+      if (!vendorId || !startDate || !endDate) {
+        return res.status(400).json({ error: 'Dati mancanti per la verifica della flotta.' });
       }
       
       const start = new Date(startDate);
       const end = new Date(endDate);
+
+      const vehiclesSnapshot = await db.collection('noleggio_veicoli').where('vendorId', '==', vendorId).get();
       
+      if (vehiclesSnapshot.empty) {
+        return res.status(200).json({ availableVehicles: [], unavailableVehicles: [] });
+      }
+      
+      const allVehicles = vehiclesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const allVehicleIds = allVehicles.map(v => v.id);
+
       const bookingsSnapshot = await db.collection('bookings')
         .where('vendorId', '==', vendorId)
-        .where('serviceId', '==', vehicleId)
+        .where('serviceId', 'in', allVehicleIds)
         .where('type', '==', 'noleggio')
         .where('status', '==', 'confirmed')
         .get();
 
-      let isAvailable = true;
-      for (const doc of bookingsSnapshot.docs) {
-        const booking = doc.data();
-        const bookingStart = booking.startDateTime.toDate();
-        const bookingEnd = booking.endDateTime.toDate();
-        if (start < bookingEnd && end > bookingStart) {
-          isAvailable = false;
-          break;
-        }
-      }
-      return res.status(200).json({ available: isAvailable });
-      
+      const conflictingBookings = bookingsSnapshot.docs.map(doc => {
+          const booking = doc.data();
+          const bookingStart = booking.startDateTime.toDate();
+          const bookingEnd = booking.endDateTime.toDate();
+          if (start < bookingEnd && end > bookingStart) {
+              return {
+                  vehicleId: booking.serviceId,
+                  customerName: booking.customerName,
+                  endDate: bookingEnd.toISOString().split('T')[0]
+              };
+          }
+          return null;
+      }).filter(Boolean);
+
+      const unavailableVehicleIds = new Set(conflictingBookings.map(b => b.vehicleId));
+
+      const availableVehicles = allVehicles
+        .filter(v => !unavailableVehicleIds.has(v.id))
+        .map(v => ({ id: v.id, model: v.model, price: v.pricePerDay }));
+
+      const unavailableVehicles = allVehicles
+        .filter(v => unavailableVehicleIds.has(v.id))
+        .map(v => {
+            const conflict = conflictingBookings.find(b => b.vehicleId === v.id);
+            return {
+                id: v.id,
+                model: v.model,
+                conflictInfo: `Prenotato da ${conflict.customerName} fino al ${new Date(conflict.endDate).toLocaleDateString('it-IT')}`
+            };
+        });
+
+      return res.status(200).json({ availableVehicles, unavailableVehicles });
+
     } else {
       // --- LOGICA ESISTENTE PER I SERVIZI (INTATTA) ---
       const { serviceId, date } = req.body;
@@ -74,7 +100,6 @@ module.exports = async (req, res) => {
           db.collection('vendors').doc(vendorId).collection('resources').get(),
           db.collection('bookings')
             .where('vendorId', '==', vendorId)
-            // CORREZIONE: usiamo startDateTime come nel tuo codice originale
             .where('startDateTime', '>=', new Date(date + 'T00:00:00Z'))
             .where('startDateTime', '<=', new Date(date + 'T23:59:59Z'))
             .get()
@@ -93,7 +118,6 @@ module.exports = async (req, res) => {
 
       const allResources = resourcesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       const existingBookings = bookingsSnapshot.docs.map(doc => ({
-        // CORREZIONE: usiamo startDateTime e endDateTime come nel tuo codice originale
         start: doc.data().startDateTime.toDate(),
         end: doc.data().endDateTime.toDate(),
         assignedResourceIds: doc.data().assignedResourceIds || []
