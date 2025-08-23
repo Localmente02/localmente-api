@@ -1,35 +1,36 @@
 {
-"version": 2,
-"headers": [
-{
-"source": "/api/(.*)",
-"headers": [
-{ "key": "Access-Control-Allow-Credentials", "value": "true" },
-{ "key": "Access-Control-Allow-Origin", "value": "https://localmente-v3-core.web.app" },
-{ "key": "Access-Control-Allow-Methods", "value": "GET,OPTIONS,PATCH,DELETE,POST,PUT" },
-{ "key": "Access-Control-Allow-Headers", "value": "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version" }
-]
-}
-],
-"crons": [
-{
-"path": "/api/clean_expired_offers",
-"schedule": "0 3 * * 1"
-},
-{
-"path": "/api/update_vehicle_status",
-"schedule": "0 * * * *"
-}
-],
-"rewrites": [
-{ "source": "/api/clean_expired_offers", "destination": "/api/clean_expired_offers.js" },
-{ "source": "/api/create-payment-intent", "destination": "/api/create-payment-intent.js" },
-{ "source": "/api/create-stripe-account-link", "destination": "/api/create-stripe-account-link.js" },
-{ "source": "/api/generate-imagekit-token", "destination": "/api/generate-imagekit-token.js" },
-{ "source": "/api/get-available-slots", "destination": "/api/get-available-slots.js" },
-{ "source": "/api/get-stripe-balance-and-transactions", "destination": "/api/get-stripe-balance-and-transactions.js" },
-{ "source": "/api/gift-recommender", "destination": "/api/gift-recommender.js" },
-{ "source": "/api/webhook", "destination": "/api/webhook.js" },
-{ "source": "/api/update_vehicle_status", "destination": "/api/update-vehicle-status.js" }
-]
+  "version": 2,
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Credentials", "value": "true" },
+        { "key": "Access-Control-Allow-Origin", "value": "https://localmente-v3-core.web.app" },
+        { "key": "Access-Control-Allow-Methods", "value": "GET,OPTIONS,PATCH,DELETE,POST,PUT" },
+        { "key": "Access-Control-Allow-Headers", "value": "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version" }
+      ]
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/clean_expired_offers",
+      "schedule": "0 3 * * 1"
+    },
+    {
+      "path": "/api/update_vehicle_status",
+      "schedule": "0 * * * *"
+    }
+  ],
+  "rewrites": [
+    { "source": "/api/clean_expired_offers", "destination": "/api/clean_expired_offers.js" },
+    { "source": "/api/create-payment-intent", "destination": "/api/create-payment-intent.js" },
+    { "source": "/api/create-stripe-account-link", "destination": "/api/create-stripe-account-link.js" },
+    { "source": "/api/generate-imagekit-token", "destination": "/api/generate-imagekit-token.js" },
+    { "source": "/api/get-available-slots", "destination": "/api/get-available-slots.js" },
+    { "source": "/api/get-stripe-balance-and-transactions", "destination": "/api/get-stripe-balance-and-transactions.js" },
+    { "source": "/api/gift-recommender", "destination": "/api/gift-recommender.js" },
+    { "source": "/api/webhook", "destination": "/api/webhook.js" },
+    { "source": "/api/update_vehicle_status", "destination": "/api/update-vehicle-status.js" },
+    { "source": "/api/get-crypto-exchange-rate", "destination": "/api/get-crypto-exchange-rate.js" }
+  ]
 }
