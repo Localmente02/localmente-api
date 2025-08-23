@@ -29,6 +29,9 @@
     { "source": "/api/get-available-slots", "destination": "/api/get-available-slots.js" },
     { "source": "/api/get-stripe-balance-and-transactions", "destination": "/api/get-stripe-balance-and-transactions.js" },
     { "source": "/api/gift-recommender", "destination": "/api/gift-recommender.js" },
+     { "source": "/api/webhook", "destination": "/api/webhook.js" },
+    { "source": "/api/update-vehicle-status", "destination": "/api/update-vehicle-status.js" },
+    { "source": "/api/get-crypto-exchange-rate", "destination": "/api/get-crypto-exchange-rate.js" } 
    
   ]
 }
