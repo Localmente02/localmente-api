@@ -10,7 +10,8 @@
     "google-auth-library": "^9.11.0",
     "imagekit": "^4.1.4",
     "stripe": "^15.11.0",
-    "@google/generative-ai": "^0.2.0"
+    "@google/generative-ai": "^0.2.0",
+    "node-fetch": "^2.6.1"
   },
   "engines": {
     "node": "20.x"
