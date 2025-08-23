@@ -18,7 +18,7 @@
     },
     {
       "path": "/api/update_vehicle_status",
-      "schedule": "0 * * * *"
+      "schedule": "0 0 * * *"
     }
   ],
   "rewrites": [
