@@ -12,7 +12,8 @@
     "stripe": "^15.11.0",
     "@google/generative-ai": "^0.2.0",
     "node-fetch": "^2.6.1",
-    "openai": "^4.x.x"
+    "openai": "^4.x.x",
+    "deepl-node": "^1.x.x"
   },
   "engines": {
     "node": "20.x"
