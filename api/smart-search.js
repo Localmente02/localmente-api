@@ -1,21 +1,23 @@
 // api/smart-search.js
 const OpenAI = require('openai');
+const deepl = require('deepl-node'); // <<< AGGIUNTO IMPORT >>>
 
 // Configura la chiave API di OpenRouter
-// Questa chiave sarà letta dalle variabili d'ambiente di Vercel.
 const openai = new OpenAI({
-  apiKey: process.env.OPENROUTER_API_KEY, // Il nome della variabile d'ambiente su Vercel
+  apiKey: process.env.OPENROUTER_API_KEY,
   baseURL: "https://openrouter.ai/api/v1",
 });
 
+// Configura la chiave API di DeepL (per la traduzione)
+// È essenziale che questa sia una variabile d'ambiente su Vercel!
+const translator = new deepl.Translator(process.env.DEEPL_API_KEY); // <<< AGGIUNTO >>>
+
 module.exports = async (req, res) => {
-  // Impostazioni CORS per permettere all'app Flutter di chiamare questa funzione
-  res.setHeader('Access-Control-Allow-Origin', 'https://localmente-v3-core.web.app'); // Sostituisci con l'URL della tua web app se diverso
+  res.setHeader('Access-Control-Allow-Origin', 'https://localmente-v3-core.web.app');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') {
-    // Risponde pre-flight CORS
     return res.status(200).end();
   }
 
@@ -23,14 +25,30 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  const { userQuery, relevantData } = req.body;
+  let { userQuery, relevantData } = req.body; // relevantData sarà vuoto all'inizio
 
   if (!userQuery) {
     return res.status(400).json({ error: 'Missing userQuery in request body.' });
   }
-  // relevantData può essere vuoto, l'AI sarà istruita a gestire questo.
 
-  // Istruzioni per l'AI: costruisci il "System Prompt"
+  // <<< INIZIO: FASE DI TRADUZIONE CON DEEPL >>>
+  let translatedQuery = userQuery;
+  try {
+      // DeepL rileva automaticamente la lingua sorgente e traduce in italiano
+      const result = await translator.translateText(userQuery, null, 'it');
+      translatedQuery = result.text;
+      console.log(`Original: "${userQuery}" -> Translated: "${translatedQuery}"`);
+  } catch (translateError) {
+      console.error('DeepL Translation Error:', translateError);
+      // Continua con la query originale se la traduzione fallisce
+      translatedQuery = userQuery;
+  }
+  // <<< FINE: FASE DI TRADUZIONE >>>
+
+  // --- Qui, relevantData è ancora vuoto. Verrà popolato dalla SmartSearchService Flutter.
+  // Dobbiamo passare la translatedQuery al modello AI. ---
+
+
   const systemPrompt = `Sei un assistente di ricerca intelligente e amichevole per una piattaforma e-commerce locale chiamata "Localmente".
   Il tuo compito è aiutare gli utenti a trovare prodotti, servizi e attività commerciali disponibili nel nostro database.
   Devi sempre e solo basare le tue risposte sui "relevantData" che ti vengono forniti.
@@ -40,8 +58,6 @@ module.exports = async (req, res) => {
   Evita lunghe spiegazioni, saluti o risposte filosofiche. Vai dritto al punto.
   Non rispondere a domande generiche non correlate al nostro database di prodotti/servizi (es. barzellette, politica, meteo, calcoli matematici). In quel caso, dì che non puoi aiutare con quella richiesta ma sei felice di aiutare con la ricerca di prodotti e servizi locali.`;
 
-  // Costruisci il "User Prompt" con la query dell'utente e i dati rilevanti
-  // Includiamo un messaggio se relevantData è vuoto.
   let relevantDataMessage = "";
   if (relevantData && relevantData.length > 0) {
       relevantDataMessage = `Ecco i dati rilevanti trovati nel nostro database (formato JSON): ${JSON.stringify(relevantData)}.`;
@@ -49,23 +65,23 @@ module.exports = async (req, res) => {
       relevantDataMessage = `Non sono stati trovati dati rilevanti nel nostro database per questa query.`;
   }
 
-  const userMessage = `Ecco la query dell'utente: "${userQuery}".
+  const userMessage = `Ecco la query dell'utente (già tradotta in italiano se necessario): "${translatedQuery}".
   ${relevantDataMessage}
   Genera una risposta naturale e utile, utilizzando solo questi dati per spiegare cosa hai trovato, oppure indicando che non ci sono risultati specifici.`;
 
   try {
     const completion = await openai.chat.completions.create({
-      model: "mistralai/mistral-7b-instruct", // Modello consigliato su OpenRouter per costi e prestazioni
+      model: "mistralai/mistral-7b-instruct",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userMessage },
       ],
-      temperature: 0.7, // Mantiene l'AI creativa ma non troppo "fuori tema"
-      max_tokens: 200,  // Limita la lunghezza della risposta
+      temperature: 0.5, // Leggermente meno "creativa" per maggiore fedeltà ai dati
+      max_tokens: 200,
     });
 
     const aiResponse = completion.choices[0].message.content;
-    res.status(200).json({ aiResponse });
+    res.status(200).json({ aiResponse, translatedQuery }); // <<< AGGIUNTO translatedQuery ALLA RISPOSTA >>>
 
   } catch (error) {
     console.error('Error calling OpenRouter AI:', error);
