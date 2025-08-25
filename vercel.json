@@ -31,6 +31,7 @@
     { "source": "/api/gift-recommender", "destination": "/api/gift-recommender.js" },
     { "source": "/api/webhook", "destination": "/api/webhook.js" },
     { "source": "/api/update_vehicle_status", "destination": "/api/update-vehicle-status.js" },
-    { "source": "/api/get-crypto-exchange-rate", "destination": "/api/get-crypto-exchange-rate.js" }
+    { "source": "/api/get-crypto-exchange-rate", "destination": "/api/get-crypto-exchange-rate.js" },
+    { "source": "/api/smart-search", "destination": "/api/smart-search.js" }
   ]
 }
