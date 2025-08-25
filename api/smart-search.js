@@ -1,50 +1,67 @@
 // api/smart-search.js
-const OpenAI = require('openai'); // Assicurati di avere 'openai' installato nel tuo progetto Vercel (npm install openai)
+const OpenAI = require('openai');
 
-// Configura la chiave API di OpenRouter (o OpenAI, se la usi direttamente)
-// È essenziale che questa sia una variabile d'ambiente sul progetto Vercel!
-// Ad esempio: OPENROUTER_API_KEY
+// Configura la chiave API di OpenRouter
+// Questa chiave sarà letta dalle variabili d'ambiente di Vercel.
 const openai = new OpenAI({
-  apiKey: process.env.OPENROUTER_API_KEY,
-  baseURL: "https://openrouter.ai/api/v1", // Questo è l'endpoint di OpenRouter
+  apiKey: process.env.OPENROUTER_API_KEY, // Il nome della variabile d'ambiente su Vercel
+  baseURL: "https://openrouter.ai/api/v1",
 });
 
 module.exports = async (req, res) => {
+  // Impostazioni CORS per permettere all'app Flutter di chiamare questa funzione
+  res.setHeader('Access-Control-Allow-Origin', 'https://localmente-v3-core.web.app'); // Sostituisci con l'URL della tua web app se diverso
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    // Risponde pre-flight CORS
+    return res.status(200).end();
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
   const { userQuery, relevantData } = req.body;
 
-  if (!userQuery || !relevantData) {
-    return res.status(400).json({ error: 'Missing userQuery or relevantData in request body.' });
+  if (!userQuery) {
+    return res.status(400).json({ error: 'Missing userQuery in request body.' });
   }
+  // relevantData può essere vuoto, l'AI sarà istruita a gestire questo.
 
   // Istruzioni per l'AI: costruisci il "System Prompt"
-  // Questo dice all'AI come deve comportarsi e a cosa dare priorità.
-  const systemPrompt = `Sei un assistente di ricerca intelligente per una piattaforma e-commerce locale chiamata "Localmente".
+  const systemPrompt = `Sei un assistente di ricerca intelligente e amichevole per una piattaforma e-commerce locale chiamata "Localmente".
   Il tuo compito è aiutare gli utenti a trovare prodotti, servizi e attività commerciali disponibili nel nostro database.
   Devi sempre e solo basare le tue risposte sui "relevantData" che ti vengono forniti.
-  Non inventare informazioni. Se la query dell'utente non trova riscontro nei "relevantData", rispondi che non hai trovato risultati specifici e suggerisci di provare altri termini.
+  Non inventare informazioni. Se la query dell'utente non trova riscontro nei "relevantData" forniti, rispondi in modo conciso e amichevole che non hai trovato risultati specifici e suggerisci di provare altri termini o filtri.
   La tua risposta deve essere concisa, utile, in italiano fluente e orientata all'azione.
-  Se trovi risultati, descrivili brevemente e fai riferimento al fatto che l'utente potrà cliccare per vederli.
+  Se trovi risultati, descrivili brevemente e fai riferimento al fatto che l'utente potrà cliccare per vederli i dettagli, con un tono di voce positivo e disponibile.
   Evita lunghe spiegazioni, saluti o risposte filosofiche. Vai dritto al punto.
-  Non rispondere a domande generiche non correlate al nostro database di prodotti/servizi (es. barzellette, politica, meteo, calcoli matematici). In quel caso, dì che non puoi aiutare con quella richiesta.`;
+  Non rispondere a domande generiche non correlate al nostro database di prodotti/servizi (es. barzellette, politica, meteo, calcoli matematici). In quel caso, dì che non puoi aiutare con quella richiesta ma sei felice di aiutare con la ricerca di prodotti e servizi locali.`;
 
   // Costruisci il "User Prompt" con la query dell'utente e i dati rilevanti
+  // Includiamo un messaggio se relevantData è vuoto.
+  let relevantDataMessage = "";
+  if (relevantData && relevantData.length > 0) {
+      relevantDataMessage = `Ecco i dati rilevanti trovati nel nostro database (formato JSON): ${JSON.stringify(relevantData)}.`;
+  } else {
+      relevantDataMessage = `Non sono stati trovati dati rilevanti nel nostro database per questa query.`;
+  }
+
   const userMessage = `Ecco la query dell'utente: "${userQuery}".
-  Ecco i dati rilevanti trovati nel nostro database (formato JSON): ${JSON.stringify(relevantData)}.
-  Genera una risposta naturale e utile, utilizzando solo questi dati per spiegare cosa hai trovato.`;
+  ${relevantDataMessage}
+  Genera una risposta naturale e utile, utilizzando solo questi dati per spiegare cosa hai trovato, oppure indicando che non ci sono risultati specifici.`;
 
   try {
     const completion = await openai.chat.completions.create({
-      model: "mistralai/mistral-7b-instruct", // Puoi provare altri modelli come "gpt-3.5-turbo" o altri disponibili su OpenRouter
+      model: "mistralai/mistral-7b-instruct", // Modello consigliato su OpenRouter per costi e prestazioni
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userMessage },
       ],
-      temperature: 0.7, // Controlla la "creatività" dell'AI (0.0 è molto meno creativa)
-      max_tokens: 300,  // Limita la lunghezza della risposta per risparmiare token e essere concisi
+      temperature: 0.7, // Mantiene l'AI creativa ma non troppo "fuori tema"
+      max_tokens: 200,  // Limita la lunghezza della risposta
     });
 
     const aiResponse = completion.choices[0].message.content;
