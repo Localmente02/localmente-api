@@ -1,6 +1,6 @@
 // api/smart-search.js
 const OpenAI = require('openai');
-const deepl = require('deepl-node'); // <<< AGGIUNTO IMPORT >>>
+const translate = require('@iamtraction/google-translate'); // <<< AGGIUNTO IMPORT >>>
 
 // Configura la chiave API di OpenRouter
 const openai = new OpenAI({
@@ -8,12 +8,8 @@ const openai = new OpenAI({
   baseURL: "https://openrouter.ai/api/v1",
 });
 
-// Configura la chiave API di DeepL (per la traduzione)
-// È essenziale che questa sia una variabile d'ambiente su Vercel!
-const translator = new deepl.Translator(process.env.DEEPL_API_KEY); // <<< AGGIUNTO >>>
-
 module.exports = async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', 'https://localmente-v3-core.web.app');
+  res.setHeader('Access-Control-Allow-Origin', 'https://localmente-v3-core.web.app'); // Sostituisci con il tuo URL
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
@@ -25,29 +21,24 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  let { userQuery, relevantData } = req.body; // relevantData sarà vuoto all'inizio
+  let { userQuery, relevantData } = req.body;
 
   if (!userQuery) {
     return res.status(400).json({ error: 'Missing userQuery in request body.' });
   }
 
-  // <<< INIZIO: FASE DI TRADUZIONE CON DEEPL >>>
+  // <<< INIZIO: FASE DI TRADUZIONE CON LIBRERIA GRATUITA >>>
   let translatedQuery = userQuery;
   try {
-      // DeepL rileva automaticamente la lingua sorgente e traduce in italiano
-      const result = await translator.translateText(userQuery, null, 'it');
+      // Identifica la lingua e traduce in italiano
+      const result = await translate(userQuery, { to: 'it' });
       translatedQuery = result.text;
       console.log(`Original: "${userQuery}" -> Translated: "${translatedQuery}"`);
   } catch (translateError) {
-      console.error('DeepL Translation Error:', translateError);
-      // Continua con la query originale se la traduzione fallisce
-      translatedQuery = userQuery;
+      console.error('Lightweight Translation Error:', translateError);
+      translatedQuery = userQuery; // Continua con la query originale se la traduzione fallisce
   }
   // <<< FINE: FASE DI TRADUZIONE >>>
-
-  // --- Qui, relevantData è ancora vuoto. Verrà popolato dalla SmartSearchService Flutter.
-  // Dobbiamo passare la translatedQuery al modello AI. ---
-
 
   const systemPrompt = `Sei un assistente di ricerca intelligente e amichevole per una piattaforma e-commerce locale chiamata "Localmente".
   Il tuo compito è aiutare gli utenti a trovare prodotti, servizi e attività commerciali disponibili nel nostro database.
@@ -76,12 +67,12 @@ module.exports = async (req, res) => {
         { role: "system", content: systemPrompt },
         { role: "user", content: userMessage },
       ],
-      temperature: 0.5, // Leggermente meno "creativa" per maggiore fedeltà ai dati
+      temperature: 0.5,
       max_tokens: 200,
     });
 
     const aiResponse = completion.choices[0].message.content;
-    res.status(200).json({ aiResponse, translatedQuery }); // <<< AGGIUNTO translatedQuery ALLA RISPOSTA >>>
+    res.status(200).json({ aiResponse, translatedQuery });
 
   } catch (error) {
     console.error('Error calling OpenRouter AI:', error);
