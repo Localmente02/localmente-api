@@ -1,15 +1,14 @@
-// api/gift-recommender.js
-// VERSIONE 2.0 - FORNITORE DI DATI PER LA CACHE UNIVERSALE
-// Questo cervello non fa più calcoli. Il suo unico scopo è scaricare
-// TUTTI i documenti rilevanti da Firebase e passarli all'app.
-
 const admin = require('firebase-admin');
+const OpenAI = require('openai');
+const translate = require('@iamtraction/google-translate');
 
-// Inizializzazione sicura di Firebase Admin
+// 🔹 Inizializzazione Firebase Admin
 try {
   if (!admin.apps.length) {
     admin.initializeApp({
-      credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY)),
+      credential: admin.credential.cert(
+        JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY)
+      ),
     });
   }
 } catch (e) {
@@ -17,76 +16,94 @@ try {
 }
 const db = admin.firestore();
 
+// 🔹 Configurazione OpenRouter AI
+const openai = new OpenAI({
+  apiKey: process.env.OPENROUTER_API_KEY,
+  baseURL: "https://openrouter.ai/api/v1",
+});
 
-// La funzione helper ora recupera un'intera collezione senza limiti.
+// 🔹 Funzione helper: legge una collezione intera
 const fetchAllFromCollection = async (collectionName, type) => {
   try {
-    console.log(`Inizio recupero di TUTTI i documenti da '${collectionName}'...`);
     const snapshot = await db.collection(collectionName).get();
-    
-    if (snapshot.empty) {
-      console.log(`Nessun documento trovato in '${collectionName}'.`);
-      return [];
-    }
-    
-    const results = snapshot.docs.map(doc => {
-      return {
-        id: doc.id,   // L'ID del documento è la cosa più importante
-        type: type,   // Il tipo (product, vendor, offer)
-        data: doc.data() // Tutti i dati del documento
-      };
-    });
+    if (snapshot.empty) return [];
 
-    console.log(`Recuperati ${results.length} documenti da '${collectionName}'.`);
-    return results;
+    return snapshot.docs.map(doc => ({
+      id: doc.id,
+      type,
+      data: doc.data()
+    }));
   } catch (error) {
-    console.error(`Errore durante il recupero dalla collezione '${collectionName}':`, error);
-    // In caso di errore per una collezione, restituiamo un array vuoto per non bloccare tutto.
+    console.error(`Errore fetch collezione '${collectionName}':`, error);
     return [];
   }
 };
 
-
 module.exports = async (req, res) => {
-  // Impostazioni CORS per permettere all'app di chiamare l'API
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // CORS
+  res.setHeader('Access-Control-Allow-Origin', '*'); 
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Metodo non consentito' });
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Metodo non consentito' });
 
   try {
-    // La query non viene più usata per filtrare, ma solo per avviare il processo.
-    console.log("Richiesta ricevuta per popolare la cache universale.");
+    // 🔹 Estraggo la query dell’utente
+    let { userQuery } = req.body;
+    if (!userQuery) {
+      return res.status(400).json({ error: 'Manca userQuery nel body.' });
+    }
 
-    // Eseguiamo tutte le chiamate a Firebase in parallelo per massima velocità
-    const [products, vendors /*, offers*/] = await Promise.all([
+    // 🔹 Traduco la query in italiano (per sicurezza)
+    let translatedQuery = userQuery;
+    try {
+      const result = await translate(userQuery, { to: 'it' });
+      translatedQuery = result.text;
+    } catch (err) {
+      console.error('Errore traduzione:', err);
+    }
+
+    // 🔹 Recupero dati dalle collezioni Firestore
+    const [products, vendors] = await Promise.all([
       fetchAllFromCollection('global_product_catalog', 'product'),
       fetchAllFromCollection('vendors', 'vendor'),
-      // Se avrai una collezione 'special_offers', decommenta questa riga
-      // fetchAllFromCollection('special_offers', 'offer'), 
     ]);
+    const relevantData = [...products, ...vendors];
 
-    // Combiniamo tutti i risultati in un unico grande array
-    const allResults = [
-        ...products, 
-        ...vendors
-        /*, ...offers*/
-    ];
-    
-    console.log(`Totale risultati combinati: ${allResults.length}. Invio all'app...`);
+    // 🔹 Prompt di sistema per l’AI
+    const systemPrompt = `Sei un assistente di ricerca molto amichevole per una piattaforma e-commerce locale chiamata "Localmente".
+Il tuo compito è aiutare gli utenti a trovare prodotti, servizi e attività nel database che ti passo.
+Rispondi SEMPRE in italiano, con tono positivo e utile, come un commesso esperto che consiglia.
+Non inventare nulla: usa solo i dati che ti vengono forniti.`;
 
-    // Inviamo l'array completo all'app. L'app si occuperà di salvarlo in cache.
-    // Il formato è stato semplificato: non c'è più `aiExplanation`, verrà generato nell'app.
-    return res.status(200).json(allResults);
+    // 🔹 Creo il messaggio utente per l’AI
+    const userMessage = `Ecco la query dell'utente: "${translatedQuery}".
+Ecco i dati disponibili (JSON): ${JSON.stringify(relevantData)}.
+Genera una risposta naturale e utile, usando solo questi dati.`;
+
+    // 🔹 Chiamo l’AI
+    const completion = await openai.chat.completions.create({
+      model: "mistralai/mistral-7b-instruct",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userMessage }
+      ],
+      temperature: 0.7,
+      max_tokens: 300,
+    });
+
+    const aiResponse = completion.choices[0].message.content;
+
+    // 🔹 Risposta finale all’app
+    return res.status(200).json({
+      query: translatedQuery,
+      aiResponse,
+      rawData: relevantData, // opzionale: se vuoi anche i dati grezzi
+    });
 
   } catch (error) {
-    console.error('ERRORE GRAVE GENERALE NELLA FUNZIONE DI FETCH:', error);
-    return res.status(500).json({ error: 'Errore interno del fornitore di dati. Controlla i log di Vercel.' });
+    console.error('ERRORE GENERALE:', error);
+    return res.status(500).json({ error: 'Errore interno', details: error.message });
   }
 };
