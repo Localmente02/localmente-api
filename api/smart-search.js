@@ -4,12 +4,13 @@ const translate = require('@iamtraction/google-translate'); // <<< AGGIUNTO IMPO
 
 // Configura la chiave API di OpenRouter
 const openai = new OpenAI({
-  apiKey: process.env.OPENROUTER_API_KEY,
+  apiKey: process.env.OPENROUTER_API_KEY, // Il nome della variabile d'ambiente su Vercel
   baseURL: "https://openrouter.ai/api/v1",
 });
 
 module.exports = async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', 'https://localmente-v3-core.web.app'); // Sostituisci con il tuo URL
+  // Impostazioni CORS
+  res.setHeader('Access-Control-Allow-Origin', 'https://localmente-v3-core.web.app'); // Sostituisci con l'URL della tua web app se diverso
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
@@ -27,16 +28,18 @@ module.exports = async (req, res) => {
     return res.status(400).json({ error: 'Missing userQuery in request body.' });
   }
 
-  // <<< INIZIO: FASE DI TRADUZIONE CON LIBRERIA GRATUITA >>>
+  // <<< INIZIO: FASE DI TRADUZIONE GRATUITA E AUTOMATICA >>>
   let translatedQuery = userQuery;
   try {
-      // Identifica la lingua e traduce in italiano
+      // Questa libreria rileva automaticamente la lingua sorgente
+      // e traduce in italiano, usando l'API gratuita di Google Translate.
       const result = await translate(userQuery, { to: 'it' });
       translatedQuery = result.text;
-      console.log(`Original: "${userQuery}" -> Translated: "${translatedQuery}"`);
+      console.log(`Original Query: "${userQuery}" -> Translated to Italian: "${translatedQuery}"`);
   } catch (translateError) {
-      console.error('Lightweight Translation Error:', translateError);
-      translatedQuery = userQuery; // Continua con la query originale se la traduzione fallisce
+      console.error('Error during free translation:', translateError);
+      // Se la traduzione fallisce, usiamo la query originale.
+      translatedQuery = userQuery;
   }
   // <<< FINE: FASE DI TRADUZIONE >>>
 
