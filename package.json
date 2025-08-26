@@ -13,7 +13,7 @@
     "@google/generative-ai": "^0.2.0",
     "node-fetch": "^2.6.1",
     "openai": "^4.x.x",
-    "@iamtraction/google-translate": "^2.x.x"  // <<< QUESTA RIGA È STATA AGGIUNTA >>>
+    "@iamtraction/google-translate": "^2.x.x"
   },
   "engines": {
     "node": "20.x"
