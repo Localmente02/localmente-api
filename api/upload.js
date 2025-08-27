@@ -1,49 +1,42 @@
 import { put } from '@vercel/blob';
 
-// QUESTA È LA RIGA MAGICA CHE RISOLVE IL PROBLEMA
 export const config = {
   api: {
-    bodyParser: false, // Dice a Vercel di non "interpretare" il corpo della richiesta
+    bodyParser: false,
   },
 };
 
 export default async function handler(req, res) {
-  // Gestione della richiesta preliminare OPTIONS per CORS
+  // Gestione CORS per la richiesta OPTIONS
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'POST');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    res.status(204).end();
-    return;
+    return res.status(204).end();
   }
-  
-  // Imposta le intestazioni CORS per la risposta POST
-  res.setHeader('Access-control-Allow-Origin', '*');
-  
+
+  // Imposta CORS per la richiesta POST
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
   if (req.method !== 'POST') {
-    res.status(405).json({ message: 'Metodo non consentito.' });
-    return;
+    return res.status(405).json({ message: 'Metodo non consentito.' });
   }
 
   const filename = req.query.filename;
   if (!filename) {
-    res.status(400).json({ message: 'Nome del file non trovato.' });
-    return;
+    return res.status(400).json({ message: 'Nome del file non trovato.' });
   }
   
   try {
-    // Ora 'req' (la richiesta stessa) è il flusso di dati dell'immagine
-    // Lo passiamo direttamente a Vercel Blob
+    // Passiamo la richiesta 'req' direttamente. È il flusso dell'immagine.
     const blob = await put(filename, req, {
       access: 'public',
-      // Aggiungiamo il content-type per aiutare Vercel
-      contentType: req.headers.get('content-type') || 'application/octet-stream',
     });
 
-    res.status(200).json(blob);
+    return res.status(200).json(blob);
     
   } catch (error) {
-    console.error('Errore durante l\'upload su Vercel Blob:', error);
-    res.status(500).json({ message: 'Errore durante l\'upload su Vercel Blob', error: error.message });
+    console.error('ERRORE VERO SU VERCEL:', error); // Logghiamo l'errore vero
+    return res.status(500).json({ message: error.message });
   }
 }
