@@ -1,10 +1,7 @@
-// Contenuto del file /api/upload.js
+// Contenuto del file /api/upload.js - VERSIONE CORRETTA
 
 import { put } from '@vercel/blob';
 
-export const config = {
-  runtime: 'edge',
-};
 
 export default async function POST(request) {
   const { searchParams } = new URL(request.url);
