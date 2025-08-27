@@ -1,47 +1,51 @@
 import { put } from '@vercel/blob';
+import { NextResponse } from 'next/server';
 
-// Funzione per creare una risposta con le intestazioni CORS corrette
-function createCorsResponse(body, status) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      'Access-Control-Allow-Origin': '*', // Permette a QUALSIASI sito di chiamare questa API
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    },
-  });
+export async function POST(request) {
+  const { searchParams } = new URL(request.url);
+  const filename = searchParams.get('filename');
+
+  if (!filename) {
+    return NextResponse.json({ message: 'Nome del file non trovato.' }, { status: 400 });
+  }
+
+  // Controlla che il corpo della richiesta esista
+  if (!request.body) {
+    return NextResponse.json({ message: 'Corpo della richiesta mancante.' }, { status: 400 });
+  }
+
+  try {
+    // Carica il corpo della richiesta (l'immagine) direttamente su Vercel Blob
+    const blob = await put(filename, request.body, {
+      access: 'public',
+    });
+
+    // Usa NextResponse per creare una risposta JSON con le intestazioni CORS corrette
+    const response = NextResponse.json(blob, { status: 200 });
+    
+    // Aggiungiamo esplicitamente le intestazioni CORS per massima compatibilità
+    response.headers.set('Access-Control-Allow-Origin', '*');
+    response.headers.set('Access-Control-Allow-Methods', 'POST, GET, OPTIONS, DELETE, PUT');
+    response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    return response;
+
+  } catch (error) {
+    const errorResponse = NextResponse.json(
+        { message: 'Errore durante l\'upload su Vercel Blob', error: error.message },
+        { status: 500 }
+    );
+    // Aggiungiamo le intestazioni CORS anche in caso di errore
+    errorResponse.headers.set('Access-Control-Allow-Origin', '*');
+    return errorResponse;
+  }
 }
 
-export default async function handler(request) {
-  // Vercel invia una richiesta "preflight" di tipo OPTIONS per controllare i permessi CORS
-  if (request.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-      },
-    });
-  }
-  
-  // Codice di upload originale
-  if (request.method === 'POST') {
-    const { searchParams } = new URL(request.url);
-    const filename = searchParams.get('filename');
-
-    if (!filename || !request.body) {
-      return createCorsResponse({ message: 'Richiesta non valida.' }, 400);
-    }
-
-    try {
-      const blob = await put(filename, request.body, { access: 'public' });
-      return createCorsResponse(blob, 200);
-    } catch (error) {
-      return createCorsResponse({ message: 'Errore durante l\'upload su Vercel Blob', error: error.message }, 500);
-    }
-  }
-
-  // Se non è POST o OPTIONS, restituisci un errore
-  return createCorsResponse({ message: 'Metodo non consentito' }, 405);
+// Aggiungiamo una funzione per gestire le richieste OPTIONS (necessarie per CORS)
+export async function OPTIONS() {
+    const response = new Response(null, { status: 204 });
+    response.headers.set('Access-Control-Allow-Origin', '*');
+    response.headers.set('Access-Control-Allow-Methods', 'POST, GET, OPTIONS, DELETE, PUT');
+    response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    return response;
 }
