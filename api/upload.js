@@ -1,5 +1,12 @@
 import { put } from '@vercel/blob';
 
+// QUESTA È LA RIGA MAGICA CHE RISOLVE IL PROBLEMA
+export const config = {
+  api: {
+    bodyParser: false, // Dice a Vercel di non "interpretare" il corpo della richiesta
+  },
+};
+
 export default async function handler(req, res) {
   // Gestione della richiesta preliminare OPTIONS per CORS
   if (req.method === 'OPTIONS') {
@@ -13,26 +20,26 @@ export default async function handler(req, res) {
   // Imposta le intestazioni CORS per la risposta POST
   res.setHeader('Access-control-Allow-Origin', '*');
   
-  // Controlla che il metodo sia POST
   if (req.method !== 'POST') {
-    res.status(405).json({ message: 'Metodo non consentito. Solo POST è accettato.' });
+    res.status(405).json({ message: 'Metodo non consentito.' });
     return;
   }
 
   const filename = req.query.filename;
-
   if (!filename) {
-    res.status(400).json({ message: 'Nome del file non trovato nei parametri URL.' });
+    res.status(400).json({ message: 'Nome del file non trovato.' });
     return;
   }
   
   try {
-    // Il corpo della richiesta (l'immagine) viene passato direttamente a 'put'
-    const blob = await put(filename, req.body, {
+    // Ora 'req' (la richiesta stessa) è il flusso di dati dell'immagine
+    // Lo passiamo direttamente a Vercel Blob
+    const blob = await put(filename, req, {
       access: 'public',
+      // Aggiungiamo il content-type per aiutare Vercel
+      contentType: req.headers.get('content-type') || 'application/octet-stream',
     });
 
-    // Invia la risposta con successo
     res.status(200).json(blob);
     
   } catch (error) {
