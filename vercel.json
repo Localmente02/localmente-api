@@ -1,7 +1,7 @@
 {
   "version": 2,
   "headers": [
-     {
+    {
       "source": "/api/(.*)",
       "headers": [
         { "key": "Access-Control-Allow-Credentials", "value": "true" },
@@ -22,17 +22,16 @@
     }
   ],
   "rewrites": [
-    
-    { "source": "/api/clean_expired_offers", "destination": "/api/orchestrator" },
-    { "source": "/api/create-payment-intent", "destination": "/api/orchestrator" },
-    { "source": "/api/create-stripe-account-link", "destination": "/api/orchestrator" },
-    { "source": "/api/generate-imagekit-token", "destination": "/api/orchestrator" },
-    { "source": "/api/get-available-slots", "destination": "/api/orchestrator" },
-    { "source": "/api/get-stripe-balance-and-transactions", "destination": "/api/orchestrator" },
-    { "source": "/api/gift-recommender", "destination": "/api/orchestrator" },
-    { "source": "/api/webhook", "destination": "/api/webhook.js" }
-    { "source": "/api/update_vehicle_status", "destination": "/api/orchestrator" },
-    { "source": "/api/get-crypto-exchange-rate", "destination": "/api/orchestrator" },
-    { "source": "/api/smart-search", "destination": "/api/orchestrator" }
+    { "source": "/api/clean_expired_offers", "destination": "/api/clean_expired_offers.js" },
+    { "source": "/api/create-payment-intent", "destination": "/api/create-payment-intent.js" },
+    { "source": "/api/create-stripe-account-link", "destination": "/api/create-stripe-account-link.js" },
+    { "source": "/api/generate-imagekit-token", "destination": "/api/generate-imagekit-token.js" },
+    { "source": "/api/get-available-slots", "destination": "/api/get-available-slots.js" },
+    { "source": "/api/get-stripe-balance-and-transactions", "destination": "/api/get-stripe-balance-and-transactions.js" },
+    { "source": "/api/gift-recommender", "destination": "/api/gift-recommender.js" },
+    { "source": "/api/webhook", "destination": "/api/webhook.js" },
+    { "source": "/api/update_vehicle_status", "destination": "/api/update-vehicle-status.js" },
+    { "source": "/api/get-crypto-exchange-rate", "destination": "/api/get-crypto-exchange-rate.js" },
+    { "source": "/api/smart-search", "destination": "/api/smart-search.js" }
   ]
 }
