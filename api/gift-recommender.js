@@ -22,17 +22,26 @@ const openai = new OpenAI({
   baseURL: "https://openrouter.ai/api/v1",
 });
 
-// 🔹 Funzione helper: legge una collezione intera
+// 🔹 Funzione helper: legge una collezione intera (MODIFICATA PER FILTRARE isAvailable)
 const fetchAllFromCollection = async (collectionName, type) => {
   try {
-    const snapshot = await db.collection(collectionName).get();
+    // Aggiungiamo un filtro per isAvailable == true
+    const snapshot = await db.collection(collectionName)
+                               .where('isAvailable', '==', true) // <<< AGGIUNTA FILTRO isAvailable: true
+                               .get();
     if (snapshot.empty) return [];
 
-    return snapshot.docs.map(doc => ({
-      id: doc.id,
-      type,
-      data: doc.data()
-    }));
+    return snapshot.docs.map(doc => {
+      const data = doc.data();
+      // Verifichiamo se il documento ha un campo 'type' (es. i kit hanno type: 'kit')
+      // Se il tipo è già nel documento, lo usiamo. Altrimenti usiamo il 'type' passato (es. 'product' per global_product_catalog)
+      const docType = data.type || type; // Se il documento ha un suo type, usalo. Altrimenti usa il type predefinito.
+      return {
+        id: doc.id,
+        type: docType, // Usiamo il tipo dal documento se presente, altrimenti il tipo predefinito
+        data: data
+      };
+    });
   } catch (error) {
     console.error(`Errore fetch collezione '${collectionName}':`, error);
     return [];
@@ -64,12 +73,14 @@ module.exports = async (req, res) => {
       console.error('Errore traduzione:', err);
     }
 
-    // 🔹 Recupero dati dalle collezioni Firestore
-    const [products, vendors] = await Promise.all([
-      fetchAllFromCollection('global_product_catalog', 'product'),
+    // 🔹 Recupero dati dalle collezioni Firestore (MODIFICATO: INCLUDIAMO I KIT)
+    const [globalCatalogItems, vendors] = await Promise.all([
+      // fetchAllFromCollection ora gestirà il tipo 'product' di default,
+      // ma se un documento nel global_product_catalog ha type: 'kit', lo userà.
+      fetchAllFromCollection('global_product_catalog', 'product'), 
       fetchAllFromCollection('vendors', 'vendor'),
     ]);
-    const relevantData = [...products, ...vendors];
+    const relevantData = [...globalCatalogItems, ...vendors]; // relevantData ora include prodotti e kit dal catalogo globale
 
     // 🔹 Prompt di sistema per l’AI
     const systemPrompt = `Sei un assistente di ricerca molto amichevole per una piattaforma e-commerce locale chiamata "Localmente".
