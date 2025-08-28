@@ -22,30 +22,23 @@ const openai = new OpenAI({
   baseURL: "https://openrouter.ai/api/v1",
 });
 
-// 🔹 Funzione helper: legge una collezione intera
+// 🔹 Funzione helper: legge una collezione intera (Filtra per isAvailable == true)
 const fetchAllFromCollection = async (collectionName, type) => {
   try {
-    // console.log(`[Vercel] Inizio fetch da collezione: ${collectionName} con tipo predefinito: ${type}`); // <<< NUOVO LOG
     const snapshot = await db.collection(collectionName)
-                               .where('isAvailable', '==', true) // Filtra solo i kit disponibili
+                               .where('isAvailable', '==', true) // Filtra solo gli elementi disponibili
                                .get();
-    if (snapshot.empty) {
-      // console.log(`[Vercel] Nessun documento trovato in ${collectionName}.`); // <<< NUOVO LOG
-      return [];
-    }
+    if (snapshot.empty) return [];
 
-    const items = snapshot.docs.map(doc => {
+    return snapshot.docs.map(doc => {
       const data = doc.data();
       const docType = data.type || type;
-      // console.log(`[Vercel] Trovato documento ID: ${doc.id}, Type: ${docType}, isAvailable: ${data.isAvailable}`); // <<< NUOVO LOG
       return {
         id: doc.id,
         type: docType,
         data: data
       };
     });
-    // console.log(`[Vercel] Finito fetch da ${collectionName}. Trovati ${items.length} elementi.`); // <<< NUOVO LOG
-    return items;
   } catch (error) {
     console.error(`[Vercel] Errore fetch collezione '${collectionName}':`, error);
     return [];
@@ -63,41 +56,21 @@ module.exports = async (req, res) => {
 
   try {
     let { userQuery } = req.body;
-    // userQuery non è più usato qui per il fetch 'all', quindi possiamo rimuovere la traduzione o usarla per l'AI
-    // Se userQuery è 'all', lo trattiamo come una richiesta per tutti i dati senza AI.
-    const isAllDataRequest = userQuery === 'all';
+    if (!userQuery) {
+      userQuery = "all";
+    }
 
-    // Se non è una richiesta per tutti i dati, facciamo la traduzione e la AI
     let translatedQuery = userQuery;
-    let aiResponse = null;
+    let aiResponseContent = null;
 
-    if (!isAllDataRequest) {
+    if (userQuery !== "all") { 
         try {
             const result = await translate(userQuery, { to: 'it' });
             translatedQuery = result.text;
         } catch (err) {
             console.error('[Vercel] Errore traduzione:', err);
         }
-    }
 
-
-    // 🔹 Recupero dati dalle collezioni Firestore
-    // MODIFICATO: Includiamo i kit dal global_product_catalog con type: 'kit'
-    const [globalCatalogItems, vendors] = await Promise.all([
-      fetchAllFromCollection('global_product_catalog', 'product'), 
-      fetchAllFromCollection('vendors', 'vendor'),
-    ]);
-    const relevantData = [...globalCatalogItems, ...vendors];
-
-    // console.log(`[Vercel] Dati totali da Firestore prima dell'AI: ${relevantData.length} elementi.`); // <<< NUOVO LOG
-    // relevantData.forEach(item => {
-    //   if (item.type === 'kit') { // <<< NUOVO LOG: Metti questo tra commenti una volta risolto il problema >>>
-    //     console.log(`[Vercel - KIT DETTAGLIO] ID: ${item.id}, Name: ${item.data.kitName}, Type: ${item.type}, isAvailable: ${item.data.isAvailable}, SearchableIndex: ${item.data.searchableIndex}`);
-    //   }
-    // });
-    // console.log(`[Vercel] Richiesta query AI: ${userQuery}`); // <<< NUOVO LOG
-
-    if (!isAllDataRequest) { // Solo se non è una richiesta per tutti i dati (cioè, c'è una query utente specifica)
         const systemPrompt = `Sei un assistente di ricerca molto amichevole per una piattaforma e-commerce locale chiamata "Localmente".
 Il tuo compito è aiutare gli utenti a trovare prodotti, servizi e attività nel database che ti passo.
 Rispondi SEMPRE in italiano, con tono positivo e utile, come un commesso esperto che consiglia.
@@ -116,18 +89,24 @@ Genera una risposta naturale e utile, usando solo questi dati.`;
             temperature: 0.7,
             max_tokens: 300,
         });
-        aiResponse = completion.choices[0].message.content;
+        aiResponseContent = completion.choices[0].message.content;
     }
+
+    // 🔹 Recupero dati dalle collezioni Firestore (SPOSTATO QUI PERCHE' NECESSARIO PER L'AI)
+    const [globalCatalogItems, vendors] = await Promise.all([
+      fetchAllFromCollection('global_product_catalog', 'product'), 
+      fetchAllFromCollection('vendors', 'vendor'),
+    ]);
+    const relevantData = [...globalCatalogItems, ...vendors];
 
 
     // 🔹 Risposta finale all’app
-    return res.status(200).json(relevantData); // <<< MODIFICATO: Restituisce direttamente i dati rilevanti, senza aiResponse se query è 'all'
-    // Se vuoi la AI Response solo per query specifiche:
-    // return res.status(200).json({
-    //   query: translatedQuery,
-    //   aiResponse: aiResponse,
-    //   results: relevantData, // Ora relevantData sono i veri risultati
-    // });
+    // <<< CORREZIONE CRITICA QUI: Restituisce SEMPRE un oggetto con la chiave 'results' >>>
+    return res.status(200).json({
+      query: translatedQuery,
+      aiResponse: aiResponseContent,
+      results: relevantData, // Ora relevantData sono i veri risultati e sono sempre dentro 'results'
+    });
 
   } catch (error) {
     console.error('[Vercel] ERRORE GENERALE:', error);
