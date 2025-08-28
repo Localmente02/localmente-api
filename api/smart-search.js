@@ -32,11 +32,46 @@ const fetchAllFromCollection = async (collectionName, type) => {
 
     return snapshot.docs.map(doc => {
       const data = doc.data();
-      const docType = data.type || type;
+      const docType = data.type || type; // Se il documento ha un suo type, usalo. Altrimenti usa il type predefinito.
+
+      // <<< NUOVA LOGICA: Adatta i dati del kit per UniversalSearchResultItem/KitRicettaModel >>>
+      let adaptedData = { ...data }; // Inizia con tutti i dati originali
+
+      if (docType === 'kit') {
+        // Mappa i nomi specifici del kit ai nomi più generici/attesi
+        adaptedData.productName = data.kitName; // Per UniversalSearchResult.name
+        adaptedData.price = data.basePrice; // Per UniversalSearchResult.price
+        adaptedData.productImageUrl = data.imageUrl; // Per UniversalSearchResult.imageUrl
+        adaptedData.brand = data.vendorStoreName; // Per UniversalSearchResult.brand
+
+        // Assicurati che i campi di dettaglio siano al top level o facilmente accessibili
+        // (KitRicettaModel.fromMap cerca kitName, recipeText, videoUrl direttamente in 'data')
+        adaptedData.kitName = data.kitName; // Esplicito per KitRicettaModel.fromMap
+        adaptedData.recipeText = data.recipeText; // Esplicito
+        adaptedData.videoUrl = data.videoUrl; // Esplicito
+        adaptedData.description = data.description; // Esplicito
+        adaptedData.difficulty = data.difficulty; // Esplicito
+        adaptedData.preparationTime = data.preparationTime; // Esplicito
+        adaptedData.galleryImageUrls = data.galleryImageUrls; // Esplicito
+
+        // Se ingredientsList è sotto kitDetails, portalo al top level di adaptedData per KitRicettaModel.fromMap
+        if (data.kitDetails && data.kitDetails.ingredientsList) {
+          adaptedData.ingredients = data.kitDetails.ingredientsList;
+        } else {
+          adaptedData.ingredients = data.ingredients; // Fallback se non è annidato
+        }
+        if (data.kitDetails && data.kitDetails.servingsData) {
+          adaptedData.servingsData = data.kitDetails.servingsData;
+        } else {
+          adaptedData.servingsData = data.servingsData; // Fallback se non è annidato
+        }
+      }
+      // <<< FINE NUOVA LOGICA >>>
+
       return {
         id: doc.id,
         type: docType,
-        data: data
+        data: adaptedData // Restituisce i dati adattati
       };
     });
   } catch (error) {
@@ -71,6 +106,14 @@ module.exports = async (req, res) => {
             console.error('[Vercel] Errore traduzione:', err);
         }
 
+        // 🔹 Recupero dati dalle collezioni Firestore (necessario qui per l'AI)
+        const [globalCatalogItems, vendors] = await Promise.all([
+          fetchAllFromCollection('global_product_catalog', 'product'), 
+          fetchAllFromCollection('vendors', 'vendor'),
+        ]);
+        const relevantData = [...globalCatalogItems, ...vendors];
+
+
         const systemPrompt = `Sei un assistente di ricerca molto amichevole per una piattaforma e-commerce locale chiamata "Localmente".
 Il tuo compito è aiutare gli utenti a trovare prodotti, servizi e attività nel database che ti passo.
 Rispondi SEMPRE in italiano, con tono positivo e utile, come un commesso esperto che consiglia.
@@ -90,22 +133,21 @@ Genera una risposta naturale e utile, usando solo questi dati.`;
             max_tokens: 300,
         });
         aiResponseContent = completion.choices[0].message.content;
+    } else {
+        // Se userQuery è "all", recuperiamo i dati qui e li passiamo direttamente
+        const [globalCatalogItems, vendors] = await Promise.all([
+            fetchAllFromCollection('global_product_catalog', 'product'), 
+            fetchAllFromCollection('vendors', 'vendor'),
+        ]);
+        relevantData = [...globalCatalogItems, ...vendors]; // Assegna a relevantData per la risposta
     }
-
-    // 🔹 Recupero dati dalle collezioni Firestore (SPOSTATO QUI PERCHE' NECESSARIO PER L'AI)
-    const [globalCatalogItems, vendors] = await Promise.all([
-      fetchAllFromCollection('global_product_catalog', 'product'), 
-      fetchAllFromCollection('vendors', 'vendor'),
-    ]);
-    const relevantData = [...globalCatalogItems, ...vendors];
 
 
     // 🔹 Risposta finale all’app
-    // <<< CORREZIONE CRITICA QUI: Restituisce SEMPRE un oggetto con la chiave 'results' >>>
     return res.status(200).json({
       query: translatedQuery,
       aiResponse: aiResponseContent,
-      results: relevantData, // Ora relevantData sono i veri risultati e sono sempre dentro 'results'
+      results: relevantData,
     });
 
   } catch (error) {
