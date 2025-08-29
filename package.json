@@ -14,7 +14,8 @@
     "node-fetch": "^2.6.1",
     "openai": "^4.x.x",
     "@iamtraction/google-translate": "^2.x.x",
-    "@vercel/blob": "^0.23.2"
+    "@vercel/blob": "^0.23.2",
+    "fuse.js": "^7.0.0"
   },
   "engines": {
     "node": "20.x"
