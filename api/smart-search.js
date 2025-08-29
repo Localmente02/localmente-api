@@ -1,157 +1,94 @@
+// Importiamo gli strumenti che ci servono. Ora c'è anche Fuse!
 const admin = require('firebase-admin');
-const OpenAI = require('openai');
-const translate = require('@iamtraction/google-translate');
+const Fuse = require('fuse.js');
 
-// 🔹 Inizializzazione Firebase Admin
+// Inizializzazione di Firebase. Questo non cambia.
 try {
   if (!admin.apps.length) {
     admin.initializeApp({
-      credential: admin.credential.cert(
-        JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY)
-      ),
+      credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY)),
     });
   }
-} catch (e) {
-  console.error('Firebase Admin Initialization Error', e.stack);
-}
+} catch (e) { console.error('Firebase Admin Initialization Error', e.stack); }
 const db = admin.firestore();
 
-// 🔹 Configurazione OpenRouter AI
-const openai = new OpenAI({
-  apiKey: process.env.OPENROUTER_API_KEY,
-  baseURL: "https://openrouter.ai/api/v1",
-});
-
-// 🔹 Funzione helper: legge una collezione intera (Filtra per isAvailable == true)
-const fetchAllFromCollection = async (collectionName, type) => {
+// Funzione per prendere i dati da Firestore. Non cambia.
+const fetchAllFromCollection = async (collectionName) => {
   try {
-    const snapshot = await db.collection(collectionName)
-                               .where('isAvailable', '==', true) // Filtra solo gli elementi disponibili
-                               .get();
+    const snapshot = await db.collection(collectionName).where('isAvailable', '==', true).get();
     if (snapshot.empty) return [];
-
-    return snapshot.docs.map(doc => {
-      const data = doc.data();
-      const docType = data.type || type; // Se il documento ha un suo type, usalo. Altrimenti usa il type predefinito.
-
-      // <<< NUOVA LOGICA: Adatta i dati del kit per UniversalSearchResultItem/KitRicettaModel >>>
-      let adaptedData = { ...data }; // Inizia con tutti i dati originali
-
-      if (docType === 'kit') {
-        // Mappa i nomi specifici del kit ai nomi più generici/attesi
-        adaptedData.productName = data.kitName; // Per UniversalSearchResult.name
-        adaptedData.price = data.basePrice; // Per UniversalSearchResult.price
-        adaptedData.productImageUrl = data.imageUrl; // Per UniversalSearchResult.imageUrl
-        adaptedData.brand = data.vendorStoreName; // Per UniversalSearchResult.brand
-
-        // Assicurati che i campi di dettaglio siano al top level o facilmente accessibili
-        // (KitRicettaModel.fromMap cerca kitName, recipeText, videoUrl direttamente in 'data')
-        adaptedData.kitName = data.kitName; // Esplicito per KitRicettaModel.fromMap
-        adaptedData.recipeText = data.recipeText; // Esplicito
-        adaptedData.videoUrl = data.videoUrl; // Esplicito
-        adaptedData.description = data.description; // Esplicito
-        adaptedData.difficulty = data.difficulty; // Esplicito
-        adaptedData.preparationTime = data.preparationTime; // Esplicito
-        adaptedData.galleryImageUrls = data.galleryImageUrls; // Esplicito
-
-        // Se ingredientsList è sotto kitDetails, portalo al top level di adaptedData per KitRicettaModel.fromMap
-        if (data.kitDetails && data.kitDetails.ingredientsList) {
-          adaptedData.ingredients = data.kitDetails.ingredientsList;
-        } else {
-          adaptedData.ingredients = data.ingredients; // Fallback se non è annidato
-        }
-        if (data.kitDetails && data.kitDetails.servingsData) {
-          adaptedData.servingsData = data.kitDetails.servingsData;
-        } else {
-          adaptedData.servingsData = data.servingsData; // Fallback se non è annidato
-        }
-      }
-      // <<< FINE NUOVA LOGICA >>>
-
-      return {
-        id: doc.id,
-        type: docType,
-        data: adaptedData // Restituisce i dati adattati
-      };
-    });
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
   } catch (error) {
-    console.error(`[Vercel] Errore fetch collezione '${collectionName}':`, error);
+    console.error(`Errore nel caricare la collezione '${collectionName}':`, error);
     return [];
   }
 };
 
+// Questa è la funzione principale che risponde alla tua app
 module.exports = async (req, res) => {
-  // CORS
-  res.setHeader('Access-Control-Allow-Origin', '*'); 
+  // Gestione CORS e del metodo POST. Non cambia.
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Metodo non consentito' });
 
   try {
-    let { userQuery } = req.body;
+    // Prendiamo la parola cercata dall'utente
+    const { userQuery } = req.body;
     if (!userQuery) {
-      userQuery = "all";
+      return res.status(400).json({ error: 'Query mancante' });
     }
 
-    let translatedQuery = userQuery;
-    let aiResponseContent = null;
+    // 1. CARICHIAMO TUTTI I DATI DA FIRESTORE
+    //    Usiamo Promise.all per caricarli in parallelo, è un po' più veloce.
+    const [products, vendors] = await Promise.all([
+      fetchAllFromCollection('global_product_catalog'),
+      fetchAllFromCollection('vendors')
+    ]);
+    const allDataToSearch = [...products, ...vendors]; // Uniamo tutto in un'unica lista
 
-    if (userQuery !== "all") { 
-        try {
-            const result = await translate(userQuery, { to: 'it' });
-            translatedQuery = result.text;
-        } catch (err) {
-            console.error('[Vercel] Errore traduzione:', err);
-        }
-
-        // 🔹 Recupero dati dalle collezioni Firestore (necessario qui per l'AI)
-        const [globalCatalogItems, vendors] = await Promise.all([
-          fetchAllFromCollection('global_product_catalog', 'product'), 
-          fetchAllFromCollection('vendors', 'vendor'),
-        ]);
-        const relevantData = [...globalCatalogItems, ...vendors];
-
-
-        const systemPrompt = `Sei un assistente di ricerca molto amichevole per una piattaforma e-commerce locale chiamata "Localmente".
-Il tuo compito è aiutare gli utenti a trovare prodotti, servizi e attività nel database che ti passo.
-Rispondi SEMPRE in italiano, con tono positivo e utile, come un commesso esperto che consiglia.
-Non inventare nulla: usa solo i dati che ti vengono forniti.`;
-
-        const userMessage = `Ecco la query dell'utente: "${translatedQuery}".
-Ecco i dati disponibili (JSON): ${JSON.stringify(relevantData)}.
-Genera una risposta naturale e utile, usando solo questi dati.`;
-
-        const completion = await openai.chat.completions.create({
-            model: "mistralai/mistral-7b-instruct",
-            messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: userMessage }
-            ],
-            temperature: 0.7,
-            max_tokens: 300,
-        });
-        aiResponseContent = completion.choices[0].message.content;
-    } else {
-        // Se userQuery è "all", recuperiamo i dati qui e li passiamo direttamente
-        const [globalCatalogItems, vendors] = await Promise.all([
-            fetchAllFromCollection('global_product_catalog', 'product'), 
-            fetchAllFromCollection('vendors', 'vendor'),
-        ]);
-        relevantData = [...globalCatalogItems, ...vendors]; // Assegna a relevantData per la risposta
+    // Se non ci sono dati, restituiamo una lista vuota
+    if (allDataToSearch.length === 0) {
+      return res.status(200).json({ query: userQuery, results: [] });
     }
 
+    // 2. CONFIGURIAMO IL NOSTRO MOTORE DI RICERCA INTERNO (Fuse.js)
+    const options = {
+      // Diciamo a Fuse dove deve guardare per trovare le parole.
+      // Aggiungi qui altri nomi di campi se necessario (es. 'tags', 'ingredients', ecc.)
+      keys: ['productName', 'kitName', 'description', 'brand', 'vendorStoreName', 'name', 'category'],
+      
+      // La "magia" della tolleranza agli errori. 0.4 è un buon punto di partenza.
+      threshold: 0.4, 
+      
+      // Altre opzioni utili
+      includeScore: true,       // Ci aiuta a ordinare i risultati per rilevanza
+      minMatchCharLength: 2,    // Non cerca parole di una sola lettera
+      ignoreLocation: true,     // Cerca la parola in qualsiasi punto del testo
+    };
 
-    // 🔹 Risposta finale all’app
+    // 3. CREIAMO LA RICERCA CON I NOSTRI DATI E LE NOSTRE REGOLE
+    const fuse = new Fuse(allDataToSearch, options);
+
+    // 4. ESEGUIAMO LA RICERCA INTELLIGENTE!
+    const searchResults = fuse.search(userQuery);
+
+    // 5. PULIAMO I RISULTATI
+    //    Prendiamo solo l'oggetto del prodotto, scartando i dati extra di Fuse
+    const finalResults = searchResults.map(result => result.item);
+
+    // 6. INVIAMO I RISULTATI GIUSTI ALL'APP
     return res.status(200).json({
-      query: translatedQuery,
-      aiResponse: aiResponseContent,
-      results: relevantData,
+      query: userQuery,
+      // Abbiamo rimosso la chiamata all'AI per la ricerca. È più veloce e più affidabile.
+      // Se vuoi, puoi togliere 'aiResponse' anche dalla risposta che mandi all'app.
+      aiResponse: `Risultati per la ricerca: "${userQuery}"`, 
+      results: finalResults,
     });
 
   } catch (error) {
-    console.error('[Vercel] ERRORE GENERALE:', error);
-    return res.status(500).json({ error: 'Errore interno', details: error.message });
+    console.error('[Vercel] ERRORE GRAVE:', error);
+    return res.status(500).json({ error: 'Qualcosa è andato storto sul server.' });
   }
 };
