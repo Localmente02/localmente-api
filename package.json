@@ -15,7 +15,8 @@
     "openai": "^4.x.x",
     "@iamtraction/google-translate": "^2.x.x",
     "@vercel/blob": "^0.23.2",
-    "fuse.js": "^7.0.0"
+    "fuse.js": "^7.0.0",
+    "resend": "^3.2.0"
   },
   "engines": {
     "node": "20.x"
