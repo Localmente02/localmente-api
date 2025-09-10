@@ -65,15 +65,17 @@ async function sendPushNotification(userId, title, body, data = {}, notification
         }
 
         // Controllo per il tipo specifico di notifica
-        let specificNotificationEnabled = true;
-        if (notificationType === 'payment') {
-            specificNotificationEnabled = userPrefs?.receivePaymentNotifications ?? true; // Default a true se non settato
-        } else if (notificationType === 'favorite_vendor_new_product') {
-            specificNotificationEnabled = userPrefs?.receiveFavoriteVendorNewProducts ?? true;
-        } else if (notificationType === 'favorite_vendor_special_offer') {
-            specificNotificationEnabled = userPrefs?.receiveFavoriteVendorSpecialOffers ?? true;
-        }
-        // Aggiungi qui altri tipi di notifica
+                let specificNotificationEnabled = true;
+                if (notificationType === 'payment') {
+                    specificNotificationEnabled = userPrefs?.receivePaymentNotifications ?? true; // Default a true se non settato
+                } else if (notificationType === 'wish_response') { // <<< AGGIUNGI QUESTA RIGA
+                    specificNotificationEnabled = userPrefs?.receiveWishNotifications ?? true; // <<< E QUESTA RIGA
+                } else if (notificationType === 'favorite_vendor_new_product') {
+                    specificNotificationEnabled = userPrefs?.receiveFavoriteVendorNewProducts ?? true;
+                } else if (notificationType === 'favorite_vendor_special_offer') {
+                    specificNotificationEnabled = userPrefs?.receiveFavoriteVendorSpecialOffers ?? true;
+                }
+                // Aggiungi qui altri tipi di notifica
         
         if (!specificNotificationEnabled) {
             console.log(`Specific notification type "${notificationType}" disabled for user ${userId}. Notification not sent.`);
