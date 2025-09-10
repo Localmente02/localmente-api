@@ -1,11 +1,12 @@
 // api/webhook.js
+// VERSIONE CORRETTA: Gestisce gli eventi webhook di Stripe e invia notifiche push.
 
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const admin = require('firebase-admin');
 
 // Inizializza Firebase Admin SDK UNA SOLA VOLTA
 let db;
-let messaging;
+let messaging; // Servizio per inviare notifiche
 
 if (!admin.apps.length) {
     let firebaseConfig = null;
@@ -14,11 +15,9 @@ if (!admin.apps.length) {
     if (firebaseServiceAccountKey) {
         try {
             firebaseConfig = JSON.parse(firebaseServiceAccountKey);
-            // console.log("Attempting Firebase Admin SDK initialization with direct JSON.");
         } catch (e) {
             try {
                 firebaseConfig = JSON.parse(Buffer.from(firebaseServiceAccountKey, 'base64').toString('utf8'));
-                // console.log("Attempting Firebase Admin SDK initialization with Base64 decoded JSON.");
             } catch (e2) {
                 console.error("FIREBASE_SERVICE_ACCOUNT_KEY: Errore nel parsing (non è né JSON diretto né Base64 valido):", e2.message);
             }
@@ -47,7 +46,7 @@ if (!admin.apps.length) {
 }
 
 // Il segreto del webhook di Stripe, IMPORTANTISSIMO per la sicurezza!
-const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET; // <<< Assicurati di aver configurato questa variabile d'ambiente su Vercel!
 
 // Disabilita il parsing automatico del body di Vercel per Stripe
 export const config = {
@@ -56,7 +55,7 @@ export const config = {
     },
 };
 
-// Funzione helper per ottenere il raw body della richiesta
+// Funzione helper per ottenere il raw body della richiesta (serve per Stripe)
 function getRawBody(req) {
     return new Promise((resolve, reject) => {
         const chunks = [];
@@ -73,6 +72,7 @@ function getRawBody(req) {
 }
 
 // >>> FUNZIONE AGGIUNTA PER INVIARE NOTIFICHE PUSH (Il tuo "Postino Vercel" integrato!) <<<
+// Questa funzione prende l'ID dell'utente e manda una notifica push
 async function sendPushNotification(userId, title, body, data = {}) {
     if (!db || !messaging || !userId) {
         console.error("Cannot send notification: DB, Messaging, or userId not available.");
@@ -80,6 +80,7 @@ async function sendPushNotification(userId, title, body, data = {}) {
     }
 
     try {
+        // Recupera tutti i token FCM (indirizzi telefono) per questo utente
         const userTokensSnapshot = await db.collection('users').doc(userId).collection('fcmTokens').get();
         const tokens = userTokensSnapshot.docs.map(doc => doc.id);
 
@@ -90,14 +91,15 @@ async function sendPushNotification(userId, title, body, data = {}) {
 
         const message = {
             notification: { title, body },
-            data: data,
-            tokens: tokens,
+            data: data, // Dati extra per l'app (es. { "route": "/orders", "orderId": "xyz123" })
+            tokens: tokens, // Lista di tutti i token a cui inviare
         };
 
+        // Invia la notifica a tutti i dispositivi dell'utente
         const response = await messaging.sendEachForMulticast(message);
         console.log(`Notification sent to user ${userId}. Success: ${response.successCount}, Failure: ${response.failureCount}`);
 
-        // Rimuovi i token non più validi (opzionale, ma buona pratica)
+        // Gestisce i token non più validi (opzionale, ma buona pratica)
         if (response.failureCount > 0) {
             response.responses.forEach(async (resp, idx) => {
                 if (!resp.success) {
@@ -139,6 +141,7 @@ module.exports = async (req, res) => {
         }
 
         try {
+            // Verifica la firma del webhook con l'endpoint secret
             event = stripe.webhooks.constructEvent(rawBody, sig, endpointSecret);
             console.log(`✅ Webhook signature verified. Event type: ${event.type}`);
         } catch (err) {
@@ -154,7 +157,7 @@ module.exports = async (req, res) => {
                 
                 const orderIdFromMetadata = paymentIntentSucceeded.metadata?.orderId;
                 const vendorIdFromMetadata = paymentIntentSucceeded.metadata?.vendorId;
-                const customerUserIdFromMetadata = paymentIntentSucceeded.metadata?.customerUserId; // <<< NUOVO: ID UTENTE DAL METADATA
+                const customerUserIdFromMetadata = paymentIntentSucceeded.metadata?.customerUserId; // ID UTENTE DAL METADATA
 
 
                 if (orderIdFromMetadata && db) {
@@ -210,7 +213,7 @@ module.exports = async (req, res) => {
                 
                 const orderIdFailed = paymentIntentFailed.metadata?.orderId;
                 const vendorIdFailed = paymentIntentFailed.metadata?.vendorId;
-                const customerUserIdFailed = paymentIntentFailed.metadata?.customerUserId; // <<< NUOVO: ID UTENTE DAL METADATA
+                const customerUserIdFailed = paymentIntentFailed.metadata?.customerUserId; // ID UTENTE DAL METADATA
 
                 if (orderIdFailed && db) {
                     try {
