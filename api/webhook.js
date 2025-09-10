@@ -46,7 +46,7 @@ if (!admin.apps.length) {
 }
 
 // Il segreto del webhook di Stripe, IMPORTANTISSIMO per la sicurezza!
-const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET; // <<< Assicurati di aver configurato questa variabile d'ambiente su Vercel!
+const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
 // Disabilita il parsing automatico del body di Vercel per Stripe
 export const config = {
@@ -71,7 +71,7 @@ function getRawBody(req) {
     });
 }
 
-// >>> FUNZIONE AGGIUNTA PER INVIARE NOTIFICHE PUSH (Il tuo "Postino Vercel" integrato!) <<<
+// >>> FUNZIONE AGGIUNTA PER INVIARE NOTIFICHE PUSH <<<
 // Questa funzione prende l'ID dell'utente e manda una notifica push
 async function sendPushNotification(userId, title, body, data = {}) {
     if (!db || !messaging || !userId) {
@@ -134,14 +134,12 @@ module.exports = async (req, res) => {
 
         try {
             rawBody = await getRawBody(req);
-            // console.log("Raw body read successful, length:", rawBody ? rawBody.length : 0);
         } catch (error) {
             console.error("Errore nel leggere il raw body dalla richiesta:", error.message);
             return res.status(400).send(`Webhook Error: Failed to read raw body.`);
         }
 
         try {
-            // Verifica la firma del webhook con l'endpoint secret
             event = stripe.webhooks.constructEvent(rawBody, sig, endpointSecret);
             console.log(`✅ Webhook signature verified. Event type: ${event.type}`);
         } catch (err) {
@@ -157,7 +155,7 @@ module.exports = async (req, res) => {
                 
                 const orderIdFromMetadata = paymentIntentSucceeded.metadata?.orderId;
                 const vendorIdFromMetadata = paymentIntentSucceeded.metadata?.vendorId;
-                const customerUserIdFromMetadata = paymentIntentSucceeded.metadata?.customerUserId; // ID UTENTE DAL METADATA
+                const customerUserIdFromMetadata = paymentIntentSucceeded.metadata?.customerUserId; 
 
 
                 if (orderIdFromMetadata && db) {
@@ -188,16 +186,18 @@ module.exports = async (req, res) => {
                             console.warn(`Webhook: PaymentIntent riuscito ma vendorId non trovato nei metadata per il sotto-ordine. L'ordine principale è stato aggiornato.`);
                         }
                         
-                        // >>> INVIA NOTIFICA PUSH AL CLIENTE (Il "Postino Vercel" in azione!) <<<
+                        // >>> INVIA LA NOTIFICA PUSH DI PROVA AL CLIENTE! <<<
                         if (customerUserIdFromMetadata) {
                             await sendPushNotification(
                                 customerUserIdFromMetadata,
-                                '✅ Pagamento Riuscito!',
-                                `Il tuo pagamento per l'ordine #${orderIdFromMetadata} è stato completato.`,
-                                { route: '/orders', orderId: orderIdFromMetadata } // Dati per la navigazione
+                                'Grazie per l\'acquisto!', // Titolo della notifica
+                                'Il tuo pagamento è stato completato. Clicca qui per vedere i dettagli dell\'ordine.', // Corpo della notifica
+                                { route: '/orders', orderId: orderIdFromMetadata } // Dati per la navigazione alla pagina ordini
                             );
+                        } else {
+                            console.warn(`Webhook: customerUserId non trovato nei metadata per inviare notifica di successo.`);
                         }
-                        // >>> FINE NOTIFICA <<<
+                        // >>> FINE NOTIFICA DI PROVA <<<
 
                     } catch (updateError) {
                         console.error(`Firestore: Errore critico nell'aggiornare gli ordini (principale o sotto-ordine) ${orderIdFromMetadata}:`, updateError.message);
@@ -213,7 +213,7 @@ module.exports = async (req, res) => {
                 
                 const orderIdFailed = paymentIntentFailed.metadata?.orderId;
                 const vendorIdFailed = paymentIntentFailed.metadata?.vendorId;
-                const customerUserIdFailed = paymentIntentFailed.metadata?.customerUserId; // ID UTENTE DAL METADATA
+                const customerUserIdFailed = paymentIntentFailed.metadata?.customerUserId; 
 
                 if (orderIdFailed && db) {
                     try {
@@ -241,7 +241,7 @@ module.exports = async (req, res) => {
                             console.warn(`Webhook: PaymentIntent fallito ma vendorId non trovato nei metadata per il sotto-ordine. L'ordine principale è stato aggiornato.`);
                         }
 
-                        // >>> INVIA NOTIFICA PUSH AL CLIENTE <<<
+                        // >>> INVIA LA NOTIFICA PUSH DI PROVA ANCHE PER IL FALLIMENTO <<<
                         if (customerUserIdFailed) {
                             await sendPushNotification(
                                 customerUserIdFailed,
@@ -249,8 +249,10 @@ module.exports = async (req, res) => {
                                 `Il tuo pagamento per l'ordine #${orderIdFailed} non è riuscito. Riprova.`,
                                 { route: '/orders', orderId: orderIdFailed }
                             );
+                        } else {
+                             console.warn(`Webhook: customerUserId non trovato nei metadata per inviare notifica di fallimento.`);
                         }
-                        // >>> FINE NOTIFICA <<<
+                        // >>> FINE NOTIFICA DI PROVA <<<
 
                     } catch (updateError) {
                         console.error(`Firestore: Errore critico nell'aggiornare gli ordini falliti (principale o sotto-ordine) ${orderIdFailed}:`, updateError.message);
