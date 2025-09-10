@@ -3,9 +3,9 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const admin = require('firebase-admin');
 
-// --- NUOVO: Inizializza Firebase Admin SDK UNA SOLA VOLTA ---
+// --- Inizializza Firebase Admin SDK UNA SOLA VOLTA ---
 let db;
-let messaging; // Servizio per inviare notifiche
+let messaging;
 
 if (!admin.apps.length) {
     let firebaseConfig = null;
@@ -29,7 +29,7 @@ if (!admin.apps.length) {
                 credential: admin.credential.cert(firebaseConfig)
             });
             db = admin.firestore();
-            messaging = admin.messaging(); // Inizializza anche il servizio di Messaging
+            messaging = admin.messaging();
             console.log("Firebase Admin SDK inizializzato con successo in create-payment-intent. Firestore e Messaging pronti.");
         } catch (initError) {
             console.error("Errore nell'inizializzazione finale di Firebase Admin SDK in create-payment-intent:", initError.message);
@@ -38,20 +38,55 @@ if (!admin.apps.length) {
         console.error("FIREBASE_SERVICE_ACCOUNT_KEY non trovata o non valida. Firebase Admin SDK non inizializzato in create-payment-intent.");
     }
 } else {
-    // Se già inizializzato, prendi le istanze esistenti
     db = admin.firestore();
     messaging = admin.messaging();
     console.log("Firebase Admin SDK già inizializzato, recupero istanze Firestore e Messaging in create-payment-intent.");
 }
-// --- FINE NUOVO: Inizializzazione Firebase Admin SDK ---
+// --- Fine Inizializzazione Firebase Admin SDK ---
 
 
-// --- NUOVO: Funzione per inviare notifiche push (copiata dall'altro file) ---
-async function sendPushNotification(userId, title, body, data = {}) {
+// --- Funzione per inviare notifiche push ---
+async function sendPushNotification(userId, title, body, data = {}, notificationType) {
     if (!db || !messaging || !userId) {
         console.error("Cannot send notification: DB, Messaging, or userId not available.");
         return;
     }
+
+    // --- NUOVO: Controlla le preferenze dell'utente prima di inviare ---
+    try {
+        const userPrefsDoc = await db.collection('users').doc(userId).collection('preferences').doc('notification_settings').get();
+        const userPrefs = userPrefsDoc.data();
+
+        // Controllo generale per le push globali
+        const globalPushEnabled = userPrefs?.receivePushNotifications ?? false;
+        if (!globalPushEnabled) {
+            console.log(`Global push notifications disabled for user ${userId}. Notification not sent.`);
+            return;
+        }
+
+        // Controllo per il tipo specifico di notifica
+        let specificNotificationEnabled = true;
+        if (notificationType === 'payment') {
+            specificNotificationEnabled = userPrefs?.receivePaymentNotifications ?? true; // Default a true se non settato
+        } else if (notificationType === 'favorite_vendor_new_product') {
+            specificNotificationEnabled = userPrefs?.receiveFavoriteVendorNewProducts ?? true;
+        } else if (notificationType === 'favorite_vendor_special_offer') {
+            specificNotificationEnabled = userPrefs?.receiveFavoriteVendorSpecialOffers ?? true;
+        }
+        // Aggiungi qui altri tipi di notifica
+        
+        if (!specificNotificationEnabled) {
+            console.log(`Specific notification type "${notificationType}" disabled for user ${userId}. Notification not sent.`);
+            return;
+        }
+
+    } catch (e) {
+        console.error(`Error checking notification preferences for user ${userId}:`, e);
+        // In caso di errore nel leggere le preferenze, per sicurezza inviamo la notifica
+        // Oppure potresti decidere di non inviarla. Dipende dalla tua policy.
+        // Per ora, proseguiamo, ma logghiamo l'errore.
+    }
+    // --- FINE NUOVO: Controllo preferenze ---
 
     try {
         const userTokensSnapshot = await db.collection('users').doc(userId).collection('fcmTokens').get();
@@ -85,11 +120,10 @@ async function sendPushNotification(userId, title, body, data = {}) {
         console.error(`Error sending push notification to user ${userId} from create-payment-intent:`, error);
     }
 }
-// --- FINE NUOVO: Funzione sendPushNotification ---
+// --- Fine Funzione sendPushNotification ---
 
 
 module.exports = async (req, res) => {
-  // --- NUOVO: Log per capire l'inizio della funzione ---
   console.log("----- create-payment-intent function started! -----");
 
   if (req.method === 'POST') {
@@ -102,26 +136,26 @@ module.exports = async (req, res) => {
         applicationFeeAmount, 
         metadata,
         customerUserId,
-        // --- NUOVO: Campo per indicare di inviare una notifica ---
         sendNotification,
         notificationTitle,
         notificationBody,
-        notificationData // Dati extra per la navigazione
+        notificationData,
+        // --- NUOVO: Tipo di notifica per il controllo delle preferenze ---
+        notificationType 
       } = req.body;
 
-      // --- NUOVO: Se Flutter ci chiede di inviare una notifica ---
+      // --- Logica per inviare una notifica (NUOVO e modificato) ---
       if (sendNotification && customerUserId && messaging && db) {
           console.log(`Received request to send notification for user ${customerUserId}.`);
           await sendPushNotification(
               customerUserId,
-              notificationTitle || "Notifica da Localmente", // Titolo di default se non fornito
-              notificationBody || "Controlla l'app per i dettagli!", // Corpo di default
-              notificationData || {} // Dati extra per l'app
+              notificationTitle || "Notifica da Localmente",
+              notificationBody || "Controlla l'app per i dettagli!",
+              notificationData || {},
+              notificationType // Passa il tipo di notifica
           );
-          // Rispondi a Flutter che la notifica è stata gestita
           return res.status(200).json({ message: 'Notification sent successfully.' });
       }
-
 
       // --- LOGICA ESISTENTE PER CREARE PAYMENT INTENT ---
       if (!amount || !currency || !customerUserId) {
@@ -153,7 +187,7 @@ module.exports = async (req, res) => {
       res.status(200).json({ clientSecret: paymentIntent.client_secret });
 
     } catch (error) {
-      console.error('Error in create-payment-intent:', error); // --- Modificato: Log più specifico ---
+      console.error('Error in create-payment-intent:', error);
       res.status(500).json({ error: error.message || 'Internal server error' });
     }
   } else {
