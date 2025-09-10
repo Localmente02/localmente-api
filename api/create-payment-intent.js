@@ -5,20 +5,29 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
     try {
-      // >>> MODIFICATO: Includi 'metadata' tra i parametri ricevuti <<<
-      const { amount, currency, description, stripeAccountId, applicationFeeAmount, metadata } = req.body;
+      const { 
+        amount, 
+        currency, 
+        description, 
+        stripeAccountId, 
+        applicationFeeAmount, 
+        metadata,
+        customerUserId // <<< NUOVO: L'ID dell'utente Flutter
+      } = req.body; // <<< AGGIUNTO customerUserId QUI
 
-      if (!amount || !currency) {
-        return res.status(400).json({ error: 'Missing amount or currency' });
+      if (!amount || !currency || !customerUserId) { // <<< AGGIUNTO customerUserId NELLA VALIDAZIONE
+        return res.status(400).json({ error: 'Missing amount, currency, or customerUserId' });
       }
 
       const params = {
-        amount: parseInt(amount), // Importante: Stripe si aspetta l'importo in centesimi (o unità più piccole)
+        amount: parseInt(amount),
         currency: currency,
         payment_method_types: ['card'],
         description: description || 'No description provided',
-        // >>> NUOVO: Passa il metadata a Stripe <<<
-        metadata: metadata, // Passa il metadata ricevuto direttamente a Stripe
+        metadata: {
+          ...metadata, // Mantieni i metadati esistenti
+          customerUserId: customerUserId // <<< AGGIUNTO L'ID UTENTE AI METADATI DI STRIPE
+        },
       };
 
       // Gestione di Stripe Connect per marketplace
