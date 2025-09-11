@@ -185,28 +185,7 @@ module.exports = async (req, res) => {
           params.application_fee_amount = parseInt(applicationFeeAmount);
         }
       }
-// --- NUOVA LOGICA DI SMISTAMENTO PAGAMENTI BASATA SU paymentType ---
-      if (paymentType === 'desiderio_platform_escrow') {
-        // Questo è un pagamento per un desiderio, i soldi vanno alla piattaforma (tu).
-        // Non usiamo transfer_data. I soldi restano nel saldo della piattaforma.
-        // Aggiungiamo l'ID del venditore privato ai metadati per il futuro payout.
-        console.log('Payment Type: Desiderio (Piattaforma Escrow). Funds held by platform.');
-        params.metadata.privateSellerId = metadata.sellerUserId; // Salviamo l'ID di chi deve ricevere i soldi
-        params.metadata.desiderioId = metadata.desiderioId; // Salviamo anche l'ID del desiderio
-        params.metadata.propostaId = metadata.propostaId; // E l'ID della proposta
-      } else { 
-        // Questo è un pagamento standard per un venditore (con trasferimento immediato).
-        console.log('Payment Type: Standard (Vendor Connect). Funds split immediately.');
-        if (stripeAccountId) {
-          params.transfer_data = {
-            destination: stripeAccountId,
-          };
-          if (applicationFeeAmount) {
-            params.application_fee_amount = parseInt(applicationFeeAmount);
-          }
-        }
-      }
-      // --- FINE NUOVA LOGICA ---
+
       const paymentIntent = await stripe.paymentIntents.create(params);
 
       res.status(200).json({ clientSecret: paymentIntent.client_secret });
