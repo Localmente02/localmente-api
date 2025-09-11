@@ -67,9 +67,11 @@ async function sendPushNotification(userId, title, body, data = {}, notification
         // Controllo per il tipo specifico di notifica
                 let specificNotificationEnabled = true;
                 if (notificationType === 'payment') {
-                    specificNotificationEnabled = userPrefs?.receivePaymentNotifications ?? true; // Default a true se non settato
-                } else if (notificationType === 'wish_response') { // <<< AGGIUNGI QUESTA RIGA
-                    specificNotificationEnabled = userPrefs?.receiveWishNotifications ?? true; // <<< E QUESTA RIGA
+                    specificNotificationEnabled = userPrefs?.receivePaymentNotifications ?? true; 
+                } else if (notificationType === 'wish_response') { 
+                    specificNotificationEnabled = userPrefs?.receiveWishNotifications ?? true;
+                } else if (notificationType === 'new_chat_message') { 
+                    specificNotificationEnabled = userPrefs?.receiveChatMessageNotifications ?? true;
                 } else if (notificationType === 'favorite_vendor_new_product') {
                     specificNotificationEnabled = userPrefs?.receiveFavoriteVendorNewProducts ?? true;
                 } else if (notificationType === 'favorite_vendor_special_offer') {
