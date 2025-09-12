@@ -19,50 +19,67 @@ module.exports = async (req, res) => {
     const now = admin.firestore.Timestamp.now();
 
     // 1. Trova tutte le prenotazioni di noleggio ATTIVE in questo momento
+    // Una prenotazione è attiva se startDateTime <= now E endDateTime > now.
     const activeBookingsSnapshot = await db.collection('bookings')
       .where('type', '==', 'noleggio')
-      .where('status', '==', 'confirmed')
+      .where('status', '==', 'confirmed') // Consideriamo solo le confermate
       .where('startDateTime', '<=', now)
       .get();
 
     const rentedVehicleIds = new Set();
     activeBookingsSnapshot.forEach(doc => {
       const booking = doc.data();
-      // Controlla se la data di fine è nel futuro
-      if (booking.endDateTime.toDate() > now.toDate()) {
+      if (booking.endDateTime.toDate() > now.toDate()) { // Se la prenotazione non è ancora scaduta
         rentedVehicleIds.add(booking.serviceId); // serviceId è l'ID del veicolo
       }
     });
 
-    // 2. Prendi TUTTI i veicoli
+    // 2. Prendi TUTTI i veicoli dal database
     const allVehiclesSnapshot = await db.collection('noleggio_veicoli').get();
     
     const batch = db.batch();
     let updatesCounter = 0;
 
     // 3. Per ogni veicolo, controlla e aggiorna lo stato se necessario
-    allVehiclesSnapshot.forEach(doc => {
+    for (const doc of allVehiclesSnapshot.docs) { // Uso for...of per le async
       const vehicleId = doc.id;
       const currentStatus = doc.data().status;
+      const vehicleRef = db.collection('noleggio_veicoli').doc(vehicleId);
       
+      // Caso 1: Il veicolo è attualmente prenotato (dall'app)
       if (rentedVehicleIds.has(vehicleId)) {
-        // Questo veicolo dovrebbe essere 'rented'
         if (currentStatus !== 'rented') {
-          const vehicleRef = db.collection('noleggio_veicoli').doc(vehicleId);
-          batch.update(vehicleRef, { status: 'rented' });
+          // Se era in cleaning o maintenance, non lo forziamo a 'rented'
+          // a meno che non fosse 'available'. Questa logica va affinata con più stati.
+          // Per ora, lo mettiamo a 'rented' se non lo è già, ignorando cleaning/maintenance.
+          // In uno scenario più complesso, potremmo non voler sovrascrivere stati manuali.
+          // Per la tua logica "app ha segnato rientrata e pulita anche se non lo è",
+          // significa che il cron job deve avere la precedenza sulle prenotazioni attive.
+          batch.update(vehicleRef, { status: 'rented', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
           updatesCounter++;
-          console.log(`Veicolo ${vehicleId} impostato su 'rented'.`);
+          console.log(`Veicolo ${vehicleId} (era ${currentStatus}) impostato su 'rented' da prenotazione attiva.`);
         }
-      } else {
-        // Questo veicolo dovrebbe essere 'available'
-        if (currentStatus !== 'available') {
-          const vehicleRef = db.collection('noleggio_veicoli').doc(vehicleId);
-          batch.update(vehicleRef, { status: 'available' });
+      } 
+      // Caso 2: Il veicolo NON è attualmente prenotato (dall'app)
+      else {
+        // Se il veicolo era 'rented', significa che la prenotazione è finita.
+        // Lo stato deve passare a 'cleaning' per l'intervento manuale.
+        if (currentStatus === 'rented') {
+          batch.update(vehicleRef, { status: 'cleaning', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
           updatesCounter++;
-          console.log(`Veicolo ${vehicleId} impostato su 'available'.`);
+          console.log(`Veicolo ${vehicleId} (era 'rented') impostato su 'cleaning' (prenotazione scaduta).`);
+        } 
+        // Se non è noleggiato e non è in cleaning/maintenance, deve essere disponibile.
+        // Questo catch-all ripristina 'available' se non ci sono altre condizioni.
+        else if (currentStatus !== 'cleaning' && currentStatus !== 'maintenance' && currentStatus !== 'available') {
+          // Questo caso può accadere se uno stato sconosciuto è stato impostato
+          batch.update(vehicleRef, { status: 'available', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+          updatesCounter++;
+          console.log(`Veicolo ${vehicleId} (stato anomalo ${currentStatus}) impostato su 'available'.`);
         }
+        // Se è già 'available', 'cleaning' o 'maintenance', non facciamo nulla
       }
-    });
+    }
 
     // 4. Esegui gli aggiornamenti solo se ce ne sono
     if (updatesCounter > 0) {
