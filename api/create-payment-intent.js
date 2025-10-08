@@ -45,7 +45,7 @@ if (!admin.apps.length) {
 // --- Fine Inizializzazione Firebase Admin SDK ---
 
 
-// --- Funzione per inviare notifiche push ---
+// --- Funzione per inviare notifiche push (invariata) ---
 async function sendPushNotification(userId, title, body, data = {}, notificationType) {
     if (!db || !messaging || !userId) {
         console.error("Cannot send notification: DB, Messaging, or userId not available.");
@@ -86,9 +86,6 @@ async function sendPushNotification(userId, title, body, data = {}, notification
 
     } catch (e) {
         console.error(`Error checking notification preferences for user ${userId}:`, e);
-        // In caso di errore nel leggere le preferenze, per sicurezza inviamo la notifica
-        // Oppure potresti decidere di non inviarla. Dipende dalla tua policy.
-        // Per ora, proseguiamo, ma logghiamo l'errore.
     }
     // --- FINE NUOVO: Controllo preferenze ---
 
@@ -127,9 +124,32 @@ async function sendPushNotification(userId, title, body, data = {}, notification
 // --- Fine Funzione sendPushNotification ---
 
 
+// --- Funzione per impostare gli header CORS (se vercel.json non è sufficiente) ---
+// La lasciamo come placeholder, ma la chiamata la gestiamo nel blocco principale
+function setCorsHeaders(res) {
+    // Il vercel.json con l'asterisco sta già gestendo Access-Control-Allow-Origin,
+    // ma aggiungiamo qui per sicurezza e per METHODS.
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
+    res.setHeader('Access-Control-Max-Age', '86400');
+    // Aggiungiamo anche il supporto per Allow-Origin se il vercel.json fosse rimosso
+    // res.setHeader('Access-Control-Allow-Origin', '*'); 
+}
+
+
 module.exports = async (req, res) => {
   console.log("----- create-payment-intent function started! -----");
+  
+  // Applica gli header CORS
+  setCorsHeaders(res);
 
+  // GESTIONE DEL METODO OPTIONS (PREFLIGHT)
+  if (req.method === 'OPTIONS') {
+    // Risponde 200 OK e termina, il browser è soddisfatto
+    return res.status(200).end();
+  }
+
+  // GESTIONE DEL METODO POST
   if (req.method === 'POST') {
     try {
       const { 
@@ -144,11 +164,10 @@ module.exports = async (req, res) => {
         notificationTitle,
         notificationBody,
         notificationData,
-        // --- NUOVO: Tipo di notifica per il controllo delle preferenze ---
         notificationType 
       } = req.body;
 
-      // --- Logica per inviare una notifica (NUOVO e modificato) ---
+      // --- Logica per inviare una notifica ---
       if (sendNotification && customerUserId && messaging && db) {
           console.log(`Received request to send notification for user ${customerUserId}.`);
           await sendPushNotification(
@@ -156,7 +175,7 @@ module.exports = async (req, res) => {
               notificationTitle || "Notifica da Localmente",
               notificationBody || "Controlla l'app per i dettagli!",
               notificationData || {},
-              notificationType // Passa il tipo di notifica
+              notificationType 
           );
           return res.status(200).json({ message: 'Notification sent successfully.' });
       }
@@ -195,7 +214,8 @@ module.exports = async (req, res) => {
       res.status(500).json({ error: error.message || 'Internal server error' });
     }
   } else {
-    res.setHeader('Allow', 'POST');
+    // Gestione per tutti gli altri metodi non permessi (GET, PUT, DELETE, etc.)
+    res.setHeader('Allow', 'POST, OPTIONS');
     res.status(405).end('Method Not Allowed');
   }
 };
