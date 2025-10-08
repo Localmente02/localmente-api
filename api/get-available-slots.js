@@ -16,7 +16,7 @@ const db = admin.firestore();
 // 1. Definisci le origini consentite
 const ALLOWED_ORIGINS = [
     'https://localmente-v3-core.web.app',
-    'https://localmente-site.web.app', // LA NUOVA ORIGINE CHE CAUSAVA IL PROBLEMA
+    'https://localmente-site.web.app', 
     // Aggiungi qui anche gli URL di test o localhost se necessario
 ];
 
@@ -24,13 +24,9 @@ const ALLOWED_ORIGINS = [
 function setCorsHeaders(req, res) {
     const origin = req.headers.origin;
     
-    // Se l'origine non è definita (ad esempio, chiamata da browser) o non è nella lista, usiamo un fallback.
-    // Nel tuo caso, vogliamo rispondere con l'origine esatta se consentita.
     if (ALLOWED_ORIGINS.includes(origin)) {
         res.setHeader('Access-Control-Allow-Origin', origin);
     } 
-    // Opzione alternativa di debug: res.setHeader('Access-Control-Allow-Origin', '*'); 
-    // MA è meno sicuro, preferiamo la lista esplicita.
 
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -44,7 +40,7 @@ module.exports = async (req, res) => {
   setCorsHeaders(req, res);
 
   if (req.method === 'OPTIONS') {
-    // La richiesta preflight OPTIONS deve solo restituire 200 con gli header impostati
+    // Risponde 200 OK e termina il preflight
     return res.status(200).end();
   }
   
@@ -53,7 +49,62 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const { bookingType, vendorId } = req.body;
+    // Destrutturiamo tutte le possibili variabili, inclusa 'action' per il salvataggio
+    const { bookingType, vendorId, action } = req.body; 
+
+    // =======================================================
+    // NUOVA LOGICA 1: SALVATAGGIO DELLA PRENOTAZIONE (BOOKING)
+    // =======================================================
+    if (action === 'save_service_booking') {
+        const payload = req.body;
+        
+        // La validazione essenziale del payload di salvataggio
+        if (!payload.vendorId || !payload.serviceId || !payload.customerName) {
+            return res.status(400).json({ error: 'Dati di prenotazione incompleti per il salvataggio.' });
+        }
+
+        // --- CONVERSIONE DATE ---
+        const startDateTime = new Date(payload.startDateTime);
+        const endDateTime = new Date(payload.endDateTime);
+
+        if (isNaN(startDateTime) || isNaN(endDateTime)) {
+            return res.status(400).json({ error: 'Date/Ore non valide nel payload di salvataggio.' });
+        }
+        
+        // --- PREPARAZIONE DATI ---
+        const bookingData = {
+            vendorId: payload.vendorId,
+            serviceId: payload.serviceId,
+            customerName: payload.customerName,
+            customerPhone: payload.customerPhone,
+            bookedServiceName: payload.bookedServiceName,
+            bookedServicePrice: payload.bookedServicePrice,
+            type: payload.type || 'cura_persona', 
+            status: payload.status || 'pending', 
+            
+            // Timestamp di Firestore
+            startDateTime: admin.firestore.Timestamp.fromDate(startDateTime),
+            endDateTime: admin.firestore.Timestamp.fromDate(endDateTime),
+            
+            selectedServiceVariant: payload.selectedServiceVariant || null,
+            
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            source: 'website', 
+        };
+
+        // --- SALVATAGGIO ---
+        await db.collection('bookings').add(bookingData);
+
+        return res.status(200).json({ 
+            success: true, 
+            message: 'Prenotazione creata con successo.'
+        });
+    }
+    // =======================================================
+    // FINE NUOVA LOGICA 1
+    // =======================================================
+
 
     if (bookingType === 'rental_fleet_check') {
       const { startDate, endDate } = req.body;
@@ -77,7 +128,7 @@ module.exports = async (req, res) => {
         .where('vendorId', '==', vendorId)
         .where('serviceId', 'in', allVehicleIds)
         .where('type', '==', 'noleggio')
-        .where('status', 'in', ['confirmed', 'paid']) // Aggiungo 'paid' per sicurezza
+        .where('status', 'in', ['confirmed', 'paid']) 
         .get();
 
       const conflictingBookings = bookingsSnapshot.docs.map(doc => {
@@ -104,7 +155,6 @@ module.exports = async (req, res) => {
         .filter(v => unavailableVehicleIds.has(v.id))
         .map(v => {
             const conflict = conflictingBookings.find(b => b.vehicleId === v.id);
-            // Assicurati che conflict esista prima di accedere alle sue proprietà
             if (conflict) {
                 return {
                     id: v.id,
@@ -118,8 +168,10 @@ module.exports = async (req, res) => {
       return res.status(200).json({ availableVehicles, unavailableVehicles });
 
     } else {
-      // --- LOGICA PER I SERVIZI (slots) ---
+      // --- LOGICA ESISTENTE PER I SERVIZI (slots) ---
       const { serviceId, date } = req.body;
+      
+      // La logica di calcolo slot originale è ancora qui
       if (!vendorId || !serviceId || !date) {
         return res.status(400).json({ error: 'Dati mancanti per la verifica del servizio.' });
       }
@@ -132,7 +184,7 @@ module.exports = async (req, res) => {
             .where('vendorId', '==', vendorId)
             .where('startDateTime', '>=', new Date(date + 'T00:00:00Z'))
             .where('startDateTime', '<=', new Date(date + 'T23:59:59Z'))
-            .where('status', 'in', ['confirmed', 'paid']) // Considera solo le prenotazioni confermate/pagate
+            .where('status', 'in', ['confirmed', 'paid']) 
             .get()
       ]);
 
@@ -144,7 +196,6 @@ module.exports = async (req, res) => {
       if (!vendorDoc.exists || !vendorDoc.data().opening_hours_structured) { return res.status(200).json({ slots: [], message: 'Orari non configurati.' }); }
       
       const dateObj = new Date(date + 'T00:00:00Z');
-      // getUTCDay() ritorna 0=Dom, 1=Lun...
       const dayOfWeek = ["Dom", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab"][dateObj.getUTCDay()];
       const todayHours = vendorDoc.data().opening_hours_structured.find(d => d.day === dayOfWeek);
       
@@ -158,12 +209,11 @@ module.exports = async (req, res) => {
       }));
 
       const availableSlots = [];
-      const slotIncrement = 15; // Incremento di 15 minuti per slot
+      const slotIncrement = 15; 
 
       for (const slot of todayHours.slots) {
           if (!slot.from || !slot.to) continue;
           
-          // Usiamo la data di oggi e applichiamo l'orario di lavoro (UTC)
           const [startHour, startMinute] = slot.from.split(':').map(Number);
           const [endHour, endMinute] = slot.to.split(':').map(Number);
           
@@ -173,20 +223,16 @@ module.exports = async (req, res) => {
           const endOfWorkSlot = new Date(date + 'T00:00:00Z');
           endOfWorkSlot.setUTCHours(endHour, endMinute, 0, 0);
 
-          // Controllo per non mostrare slot nel passato (rispetto all'ora attuale UTC)
           const nowUtc = new Date();
           const startSearchTime = (currentTime < nowUtc) ? nowUtc : currentTime;
           
-          // Allineamento al primo slot valido
           let currentSlotTime = new Date(startSearchTime);
-          // Arrotonda all'incremento più vicino (es. se ora è 10:07, arrotonda a 10:15)
           const currentMins = currentSlotTime.getUTCMinutes();
           const remainder = currentMins % slotIncrement;
           if (remainder !== 0) {
               currentSlotTime.setUTCMinutes(currentMins + (slotIncrement - remainder));
           }
 
-          // Se l'orario arrotondato supera l'inizio della fascia oraria, saltiamo questa fascia
           if (currentSlotTime >= endOfWorkSlot) continue;
 
 
@@ -197,16 +243,12 @@ module.exports = async (req, res) => {
               let areAllRequirementsMet = true;
               
               if (requirements.length > 0) {
-                  // Caso con risorse (staff o cabine)
                   for (const req of requirements) {
                       const resourcesInGroup = allResources.filter(r => r.groupId === req.groupId);
                       
-                      // 3. Controlla quante risorse nel gruppo sono disponibili
                       const availableResourcesInGroup = resourcesInGroup.filter(resource => {
                           const isBusy = existingBookings.some(booking => 
                               booking.assignedResourceIds.includes(resource.id) &&
-                              // Conflitto se il nuovo slot inizia prima che la vecchia prenotazione finisca 
-                              // E il nuovo slot finisce dopo che la vecchia prenotazione è iniziata
                               (currentSlotTime < booking.end && potentialEndTime > booking.start)
                           );
                           return !isBusy;
@@ -218,7 +260,6 @@ module.exports = async (req, res) => {
                       }
                   }
               } else {
-                  // Caso SENZA risorse (assumi che lo studio possa gestire solo 1 servizio alla volta)
                   const isTimeSlotBusy = existingBookings.some(booking =>
                       currentSlotTime < booking.end && potentialEndTime > booking.start
                   );
