@@ -146,7 +146,7 @@ module.exports = async (req, res) => {
         notificationData,
         notificationType,
 
-        // Campi NUOVI per il calcolo sicuro del pagamento (preferito)
+        // Campi NUOVI per il calcolo sicuro del pagamento (PREFERITO)
         items,        // Array di { productId, quantity, price, vendorId, options }
         shipping,     // Costo di spedizione forfettario
         vendorId,     // L'ID del venditore
@@ -196,11 +196,9 @@ module.exports = async (req, res) => {
               const vendorData = vendorDoc.data();
               fetchedVendorStoreName = vendorData.store_name || fetchedVendorStoreName;
               // Se l'ID dell'account connesso non è esplicitamente passato, prova a recuperarlo dai dati del venditore
-              if (!fetchedStripeAccountId && vendorData.stripe_account_id) {
-                fetchedStripeAccountId = vendorData.stripe_account_id;
+              if (!fetchedStripeAccountId && vendorData.stripeAccountId) { // Corretto da stripe_account_id a stripeAccountId
+                fetchedStripeAccountId = vendorData.stripeAccountId;
               }
-              // Qui potresti recuperare anche una percentuale/importo fisso di commissione per l'applicazione dal venditore
-              // Per ora, ci basiamo su `applicationFeeAmount` dalla richiesta se fornito.
           } else {
               console.warn(`Venditore ${vendorId} non trovato. Proseguo con il nome del venditore predefinito.`);
           }
@@ -265,7 +263,6 @@ module.exports = async (req, res) => {
               paymentIntentMetadata.customerUserId = customerUserId; // Per utenti loggati
               paymentIntentMetadata.isGuestOrder = 'false';
           } else {
-              // Questo caso non dovrebbe accadere se il frontend è ben strutturato
               return res.status(400).json({ error: 'ID cliente o stato ospite richiesto quando vengono forniti gli articoli.' });
           }
 
@@ -279,8 +276,6 @@ module.exports = async (req, res) => {
 
           if (isGuest) {
               paymentIntentMetadata.isGuestOrder = 'true';
-              // Nel flusso legacy, guestData potrebbe non essere così dettagliato o assente
-              // Puoi aggiungere qui una logica per gestire i dati guest minimi o marcarli come "guest"
           } else if (customerUserId) {
               paymentIntentMetadata.customerUserId = customerUserId;
               paymentIntentMetadata.isGuestOrder = 'false';
@@ -299,7 +294,7 @@ module.exports = async (req, res) => {
         currency: finalCurrency,
         payment_method_types: ['card'],
         description: description || `Ordine per ${fetchedVendorStoreName}`,
-        metadata: paymentIntentMetadata,
+        metadata: paymentIntentMetadata, // Usa i metadati preparati
       };
 
       // Gestione per Account Connessi (se fetchedStripeAccountId è disponibile)
