@@ -52,32 +52,28 @@ async function sendPushNotification(userId, title, body, data = {}, notification
         return;
     }
 
-    // --- NUOVO: Controlla le preferenze dell'utente prima di inviare ---
     try {
         const userPrefsDoc = await db.collection('users').doc(userId).collection('preferences').doc('notification_settings').get();
         const userPrefs = userPrefsDoc.data();
 
-        // Controllo generale per le push globali
         const globalPushEnabled = userPrefs?.receivePushNotifications ?? false;
         if (!globalPushEnabled) {
             console.log(`Global push notifications disabled for user ${userId}. Notification not sent.`);
             return;
         }
 
-        // Controllo per il tipo specifico di notifica
-                let specificNotificationEnabled = true;
-                if (notificationType === 'payment') {
-                    specificNotificationEnabled = userPrefs?.receivePaymentNotifications ?? true; 
-                } else if (notificationType === 'wish_response') { 
-                    specificNotificationEnabled = userPrefs?.receiveWishNotifications ?? true;
-                } else if (notificationType === 'new_chat_message') { 
-                    specificNotificationEnabled = userPrefs?.receiveChatMessageNotifications ?? true;
-                } else if (notificationType === 'favorite_vendor_new_product') {
-                    specificNotificationEnabled = userPrefs?.receiveFavoriteVendorNewProducts ?? true;
-                } else if (notificationType === 'favorite_vendor_special_offer') {
-                    specificNotificationEnabled = userPrefs?.receiveFavoriteVendorSpecialOffers ?? true;
-                }
-                // Aggiungi qui altri tipi di notifica
+        let specificNotificationEnabled = true;
+        if (notificationType === 'payment') {
+            specificNotificationEnabled = userPrefs?.receivePaymentNotifications ?? true; 
+        } else if (notificationType === 'wish_response') { 
+            specificNotificationEnabled = userPrefs?.receiveWishNotifications ?? true;
+        } else if (notificationType === 'new_chat_message') { 
+            specificNotificationEnabled = userPrefs?.receiveChatMessageNotifications ?? true;
+        } else if (notificationType === 'favorite_vendor_new_product') {
+            specificNotificationEnabled = userPrefs?.receiveFavoriteVendorNewProducts ?? true;
+        } else if (notificationType === 'favorite_vendor_special_offer') {
+            specificNotificationEnabled = userPrefs?.receiveFavoriteVendorSpecialOffers ?? true;
+        }
         
         if (!specificNotificationEnabled) {
             console.log(`Specific notification type "${notificationType}" disabled for user ${userId}. Notification not sent.`);
@@ -87,7 +83,6 @@ async function sendPushNotification(userId, title, body, data = {}, notification
     } catch (e) {
         console.error(`Error checking notification preferences for user ${userId}:`, e);
     }
-    // --- FINE NUOVO: Controllo preferenze ---
 
     try {
         const userTokensSnapshot = await db.collection('users').doc(userId).collection('fcmTokens').get();
@@ -124,84 +119,196 @@ async function sendPushNotification(userId, title, body, data = {}, notification
 // --- Fine Funzione sendPushNotification ---
 
 
-// --- Funzione per impostare gli header CORS (se vercel.json non è sufficiente) ---
-// La lasciamo come placeholder, ma la chiamata la gestiamo nel blocco principale
+// --- Funzione per impostare gli header CORS ---
 function setCorsHeaders(res) {
-    // Il vercel.json con l'asterisco sta già gestendo Access-Control-Allow-Origin,
-    // ma aggiungiamo qui per sicurezza e per METHODS.
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
     res.setHeader('Access-Control-Max-Age', '86400');
-    // Aggiungiamo anche il supporto per Allow-Origin se il vercel.json fosse rimosso
-    // res.setHeader('Access-Control-Allow-Origin', '*'); 
 }
 
 
 module.exports = async (req, res) => {
   console.log("----- create-payment-intent function started! -----");
   
-  // Applica gli header CORS
   setCorsHeaders(res);
 
-  // GESTIONE DEL METODO OPTIONS (PREFLIGHT)
   if (req.method === 'OPTIONS') {
-    // Risponde 200 OK e termina, il browser è soddisfatto
     return res.status(200).end();
   }
 
-  // GESTIONE DEL METODO POST
   if (req.method === 'POST') {
     try {
       const { 
-        amount, 
-        currency, 
-        description, 
-        stripeAccountId, 
-        applicationFeeAmount, 
-        metadata,
-        customerUserId,
+        // Campi esistenti per le notifiche
         sendNotification,
         notificationTitle,
         notificationBody,
         notificationData,
-        notificationType 
+        notificationType,
+
+        // Campi NUOVI per il calcolo sicuro del pagamento (preferito)
+        items,        // Array di { productId, quantity, price, vendorId, options }
+        shipping,     // Costo di spedizione forfettario
+        vendorId,     // L'ID del venditore
+        isGuest,      // Flag booleano per checkout ospite
+        guestData,    // Oggetto con i dettagli di contatto/consegna dell'ospite
+
+        // Campi esistenti per mantenere la compatibilità (LEGACY, meno sicuro)
+        amount: legacyAmount, // Rinominato per evitare conflitti
+        currency: legacyCurrency, // Rinominato per evitare conflitti
+        description,
+        stripeAccountId, // Per account connessi (Connected Accounts)
+        applicationFeeAmount, // Per commissioni dell'applicazione su Connected Accounts
+        metadata, // Metadati esistenti
+        customerUserId // Per utenti loggati
       } = req.body;
 
-      // --- Logica per inviare una notifica ---
-      if (sendNotification && customerUserId && messaging && db) {
-          console.log(`Received request to send notification for user ${customerUserId}.`);
+      // --- PATH 1: Invia solo una notifica ---
+      if (sendNotification) {
+          if (!customerUserId) {
+            return res.status(400).json({ error: 'customerUserId è richiesto per inviare notifiche.' });
+          }
+          console.log(`Richiesta di invio notifica per l'utente ${customerUserId}.`);
           await sendPushNotification(
               customerUserId,
-              notificationTitle || "Notifica da Localmente",
+              notificationTitle || "Notifica da Civora",
               notificationBody || "Controlla l'app per i dettagli!",
               notificationData || {},
               notificationType 
           );
-          return res.status(200).json({ message: 'Notification sent successfully.' });
+          return res.status(200).json({ message: 'Notifica inviata con successo.' });
       }
 
-      // --- LOGICA ESISTENTE PER CREARE PAYMENT INTENT ---
-      if (!amount || !currency || !customerUserId) {
-        return res.status(400).json({ error: 'Missing amount, currency, or customerUserId' });
+      // --- PATH 2: Crea un Payment Intent ---
+      let finalAmount = 0;
+      let finalCurrency = 'eur'; // Valuta predefinita per il marketplace
+      let paymentIntentMetadata = { ...metadata }; // Inizia con eventuali metadati esistenti
+
+      // Popola sempre vendorId e vendorStoreName nei metadati
+      let fetchedVendorStoreName = 'Negozio Sconosciuto';
+      let fetchedStripeAccountId = stripeAccountId; // Usa quello esistente se passato, altrimenti lo cerchiamo
+      let fetchedApplicationFeeAmount = applicationFeeAmount; // Usa quello esistente se passato
+
+      // Recupera i dettagli del venditore (per nome negozio e potenziali dettagli di account connesso/commissioni)
+      if (vendorId && db) { // Assicurati che db sia inizializzato
+          const vendorDoc = await db.collection('vendors').doc(vendorId).get();
+          if (vendorDoc.exists) {
+              const vendorData = vendorDoc.data();
+              fetchedVendorStoreName = vendorData.store_name || fetchedVendorStoreName;
+              // Se l'ID dell'account connesso non è esplicitamente passato, prova a recuperarlo dai dati del venditore
+              if (!fetchedStripeAccountId && vendorData.stripe_account_id) {
+                fetchedStripeAccountId = vendorData.stripe_account_id;
+              }
+              // Qui potresti recuperare anche una percentuale/importo fisso di commissione per l'applicazione dal venditore
+              // Per ora, ci basiamo su `applicationFeeAmount` dalla richiesta se fornito.
+          } else {
+              console.warn(`Venditore ${vendorId} non trovato. Proseguo con il nome del venditore predefinito.`);
+          }
+      }
+      paymentIntentMetadata.vendorId = vendorId;
+      paymentIntentMetadata.vendorStoreName = fetchedVendorStoreName;
+
+
+      // PERCORSO DI CALCOLO SICURO DEL PAGAMENTO: Se gli 'items' sono forniti (NUOVO E PREFERITO)
+      if (items && Array.isArray(items) && items.length > 0) {
+          let calculatedSubtotal = 0;
+          const orderItemsForMetadata = []; // Dettagli item per i metadati
+
+          if (!db) { // Assicurati che Firestore sia inizializzato prima di usarlo
+             throw new Error("Firebase Firestore non inizializzato per la ricerca del prezzo del prodotto.");
+          }
+
+          for (const item of items) {
+              const productRef = db.collection('offers').doc(item.productId);
+              const productSnap = await productRef.get();
+
+              if (!productSnap.exists) {
+                  return res.status(400).json({ error: `Prodotto non trovato nel database: ${item.productId}` });
+              }
+              const productData = productSnap.data();
+              const unitPrice = productData.price; // Prezzo dal DB (validazione lato server)
+              const quantity = item.quantity;
+
+              if (unitPrice <= 0 || quantity <= 0) {
+                  return res.status(400).json({ error: `Quantità o prezzo del prodotto non validi per ${productData.productName}` });
+              }
+              calculatedSubtotal += unitPrice * quantity;
+              orderItemsForMetadata.push({
+                  productId: item.productId,
+                  productName: productData.productName,
+                  price: unitPrice,
+                  quantity: quantity,
+                  imageUrl: productData.productImageUrls ? productData.productImageUrls[0] : '',
+                  options: item.options || {} // Includi le opzioni (varianti)
+              });
+          }
+
+          // Aggiungi costo di spedizione (assicurati che sia un numero)
+          finalAmount = calculatedSubtotal + (Number(shipping) || 0);
+          paymentIntentMetadata.cartItems = JSON.stringify(orderItemsForMetadata); // Item dettagliati nei metadati
+
+          // Metadati specifici per gli ospiti
+          if (isGuest) {
+              paymentIntentMetadata.isGuestOrder = 'true';
+              if (guestData) {
+                  paymentIntentMetadata.guestName = guestData.name;
+                  paymentIntentMetadata.guestSurname = guestData.surname;
+                  paymentIntentMetadata.guestAddress = guestData.address;
+                  paymentIntentMetadata.guestCity = guestData.city;
+                  paymentIntentMetadata.guestCap = guestData.cap;
+                  paymentIntentMetadata.guestProvince = guestData.province;
+                  paymentIntentMetadata.guestCountry = guestData.country;
+                  paymentIntentMetadata.guestPhone = guestData.phone;
+                  paymentIntentMetadata.guestEmail = guestData.email;
+              }
+          } else if (customerUserId) {
+              paymentIntentMetadata.customerUserId = customerUserId; // Per utenti loggati
+              paymentIntentMetadata.isGuestOrder = 'false';
+          } else {
+              // Questo caso non dovrebbe accadere se il frontend è ben strutturato
+              return res.status(400).json({ error: 'ID cliente o stato ospite richiesto quando vengono forniti gli articoli.' });
+          }
+
+      } else { // PERCORSO LEGACY: Se gli 'items' NON sono forniti (vecchio comportamento del client)
+          console.warn("ATTENZIONE: La richiesta di Payment Intent non include gli 'items' per il calcolo server-side. L'importo (amount) viene preso direttamente dal client. SI RACCOMANDA FORTEMENTE DI AGGIORNARE IL CLIENT PER MAGGIORE SICUREZZA.");
+          if (!legacyAmount || !legacyCurrency || (!customerUserId && !isGuest)) {
+              return res.status(400).json({ error: 'Manca l\'importo, la valuta o l\'ID cliente/stato ospite per la creazione del Payment Intent (flusso legacy).' });
+          }
+          finalAmount = Number(legacyAmount);
+          finalCurrency = legacyCurrency;
+
+          if (isGuest) {
+              paymentIntentMetadata.isGuestOrder = 'true';
+              // Nel flusso legacy, guestData potrebbe non essere così dettagliato o assente
+              // Puoi aggiungere qui una logica per gestire i dati guest minimi o marcarli come "guest"
+          } else if (customerUserId) {
+              paymentIntentMetadata.customerUserId = customerUserId;
+              paymentIntentMetadata.isGuestOrder = 'false';
+          } else {
+              return res.status(400).json({ error: 'ID cliente o stato ospite richiesto (flusso legacy).' });
+          }
+      }
+
+      // VALIDAZIONE FINALE DELL'IMPORTO
+      if (finalAmount <= 0) {
+          return res.status(400).json({ error: 'L\'ammontare totale dell\'ordine deve essere positivo.' });
       }
 
       const params = {
-        amount: parseInt(amount),
-        currency: currency,
+        amount: Math.round(finalAmount * 100), // Importo in centesimi
+        currency: finalCurrency,
         payment_method_types: ['card'],
-        description: description || 'No description provided',
-        metadata: {
-          ...metadata,
-          customerUserId: customerUserId
-        },
+        description: description || `Ordine per ${fetchedVendorStoreName}`,
+        metadata: paymentIntentMetadata,
       };
 
-      if (stripeAccountId) {
+      // Gestione per Account Connessi (se fetchedStripeAccountId è disponibile)
+      if (fetchedStripeAccountId) {
         params.transfer_data = {
-          destination: stripeAccountId,
+          destination: fetchedStripeAccountId,
         };
-        if (applicationFeeAmount) {
-          params.application_fee_amount = parseInt(applicationFeeAmount);
+        if (fetchedApplicationFeeAmount) {
+          params.application_fee_amount = parseInt(fetchedApplicationFeeAmount);
         }
       }
 
@@ -210,11 +317,10 @@ module.exports = async (req, res) => {
       res.status(200).json({ clientSecret: paymentIntent.client_secret });
 
     } catch (error) {
-      console.error('Error in create-payment-intent:', error);
+      console.error('Errore in create-payment-intent:', error);
       res.status(500).json({ error: error.message || 'Internal server error' });
     }
   } else {
-    // Gestione per tutti gli altri metodi non permessi (GET, PUT, DELETE, etc.)
     res.setHeader('Allow', 'POST, OPTIONS');
     res.status(405).end('Method Not Allowed');
   }
