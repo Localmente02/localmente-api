@@ -155,20 +155,21 @@ module.exports = async (req, res) => {
         notificationType,
 
         // Campi NUOVI per il calcolo sicuro del pagamento (PREFERITO)
-        items,        // Array di { productId, quantity, price, vendorId, options }
-        shipping,     // Costo di spedizione forfettario
-        vendorId,     // L'ID del venditore (può essere vuoto se consolidated marketplace)
-        isGuest,      // Flag booleano per checkout ospite
-        guestData,    // Oggetto con i dettagli di contatto/consegna dell'ospite
+        items,               // Array di { productId, quantity, price, vendorId, options } - Questo NON sarà più inviato per guest
+        tempGuestCartRef,    // NUOVO: Riferimento temporaneo al carrello ospite in Firestore
+        shipping,            // Costo di spedizione forfettario
+        vendorId,            // L'ID del venditore (può essere vuoto se consolidated marketplace)
+        isGuest,             // Flag booleano per checkout ospite
+        guestData,           // Oggetto con i dettagli di contatto/consegna dell'ospite
 
         // Campi esistenti per mantenere la compatibilità (LEGACY, meno sicuro)
         amount: legacyAmount, // Rinominato per evitare conflitti
         currency: legacyCurrency, // Rinominato per evitare conflitti
         description,
-        stripeAccountId, // Per account connessi (Connected Accounts)
+        stripeAccountId,     // Per account connessi (Connected Accounts)
         applicationFeeAmount, // Per commissioni dell'applicazione su Connected Accounts
-        metadata, // Metadati esistenti
-        customerUserId // Per utenti loggati
+        metadata,            // Metadati esistenti
+        customerUserId       // Per utenti loggati
       } = req.body;
 
       // --- PATH 1: Invia solo una notifica ---
@@ -196,6 +197,7 @@ module.exports = async (req, res) => {
       let fetchedVendorStoreName = 'Negozio Sconosciuto';
       let fetchedStripeAccountId = stripeAccountId; 
       let fetchedApplicationFeeAmount = applicationFeeAmount; 
+      let orderItems = []; // Per tenere traccia degli item per il calcolo e i metadati
 
       // Recupera i dettagli del venditore (per nome negozio e potenziali dettagli di account connesso/commissioni)
       // Questo blocco ora gestisce anche il caso di più venditori (vendorId dalla root può essere null)
@@ -214,87 +216,83 @@ module.exports = async (req, res) => {
       paymentIntentMetadata.vendorId = vendorId; // Salva l'ID del venditore root nei metadati
       paymentIntentMetadata.vendorStoreName = fetchedVendorStoreName; // Salva il nome del venditore root nei metadati
 
-
-      // PERCORSO DI CALCOLO SICURO DEL PAGAMENTO: Se gli 'items' sono forniti (NUOVO E PREFERITO)
-      if (items && Array.isArray(items) && items.length > 0) {
-          let calculatedSubtotal = 0;
-          const orderItemsForMetadata = []; // Dettagli item per i metadati
-
-          if (!db) { 
-             throw new Error("Firebase Firestore non inizializzato per la ricerca del prezzo del prodotto.");
+      // --- NUOVA LOGICA PER GESTIRE GLI ARTICOLI DEL CARRELLO, ORA RECUPERATI DA FIRESTORE SE OSPITE ---
+      if (isGuest && tempGuestCartRef) {
+          console.log(`Guest order detected with tempGuestCartRef: ${tempGuestCartRef}. Fetching cart items from Firestore.`);
+          const tempCartDoc = await db.collection('temp_guest_carts').doc(tempGuestCartRef).get();
+          if (!tempCartDoc.exists) {
+              return res.status(400).json({ error: 'Carrello ospite temporaneo non trovato.' });
+          }
+          orderItems = tempCartDoc.data().items; // Recupera gli items dal documento temporaneo
+          paymentIntentMetadata.tempGuestCartRef = tempGuestCartRef; // Salva il riferimento per la finalizzazione
+          if (!Array.isArray(orderItems) || orderItems.length === 0) {
+            return res.status(400).json({ error: 'Articoli nel carrello ospite temporaneo non validi o vuoti.' });
+          }
+          // Aggiungi guestData ai metadati
+          if (guestData) {
+              paymentIntentMetadata.guestName = guestData.name;
+              paymentIntentMetadata.guestSurname = guestData.surname;
+              paymentIntentMetadata.guestAddress = guestData.address;
+              paymentIntentMetadata.guestCity = guestData.city;
+              paymentIntentMetadata.guestCap = guestData.cap;
+              paymentIntentMetadata.guestProvince = guestData.province;
+              paymentIntentMetadata.guestCountry = guestData.country;
+              paymentIntentMetadata.guestPhone = guestData.phone;
+              paymentIntentMetadata.guestEmail = guestData.email;
           }
 
-          for (const item of items) {
-              // Validazione critica del vendorId dell'articolo
-              if (!item.vendorId || typeof item.vendorId !== 'string' || item.vendorId.trim() === '') {
-                  return res.status(400).json({ error: `ID venditore mancante o non valido per un articolo del carrello: ${item.productId}` });
-              }
-
-              const productRef = db.collection('offers').doc(item.productId);
-              const productSnap = await productRef.get();
-
-              if (!productSnap.exists) {
-                  return res.status(400).json({ error: `Prodotto non trovato nel database: ${item.productId}` });
-              }
-              const productData = productSnap.data();
-              const unitPrice = productData.price; // Prezzo dal DB (validazione lato server)
-              const quantity = item.quantity;
-
-              if (unitPrice <= 0 || quantity <= 0) {
-                  return res.status(400).json({ error: `Quantità o prezzo del prodotto non validi per ${productData.productName}` });
-              }
-              calculatedSubtotal += unitPrice * quantity;
-              orderItemsForMetadata.push({
-                  productId: item.productId,
-                  productName: productData.productName,
-                  price: unitPrice,
-                  quantity: quantity,
-                  imageUrl: productData.productImageUrls ? productData.productImageUrls[0] : '',
-                  options: item.options || {}, // Includi le opzioni (varianti)
-                  vendorId: item.vendorId // IMPORTANTE: Mantiene il vendorId specifico dell'articolo
-              });
-          }
-
-          finalAmount = calculatedSubtotal + (Number(shipping) || 0);
-          paymentIntentMetadata.cartItems = JSON.stringify(orderItemsForMetadata); // Item dettagliati nei metadati
-
-          if (isGuest) {
-              paymentIntentMetadata.isGuestOrder = 'true';
-              if (guestData) {
-                  paymentIntentMetadata.guestName = guestData.name;
-                  paymentIntentMetadata.guestSurname = guestData.surname;
-                  paymentIntentMetadata.guestAddress = guestData.address;
-                  paymentIntentMetadata.guestCity = guestData.city;
-                  paymentIntentMetadata.guestCap = guestData.cap;
-                  paymentIntentMetadata.guestProvince = guestData.province;
-                  paymentIntentMetadata.guestCountry = guestData.country;
-                  paymentIntentMetadata.guestPhone = guestData.phone;
-                  paymentIntentMetadata.guestEmail = guestData.email;
-              }
-          } else if (customerUserId) {
+      } else if (items && Array.isArray(items) && items.length > 0) {
+          // Questo percorso è per utenti loggati che inviano ancora gli item direttamente (meno sicuro, da aggiornare)
+          orderItems = items;
+          if (customerUserId) {
               paymentIntentMetadata.customerUserId = customerUserId;
               paymentIntentMetadata.isGuestOrder = 'false';
           } else {
-              return res.status(400).json({ error: 'ID cliente o stato ospite richiesto quando vengono forniti gli articoli.' });
+              return res.status(400).json({ error: 'ID cliente richiesto quando vengono forniti gli articoli direttamente.' });
           }
-
-      } else { // PERCORSO LEGACY: Se gli 'items' NON sono forniti (vecchio comportamento del client)
-          console.warn("ATTENZIONE: La richiesta di Payment Intent non include gli 'items' per il calcolo server-side. L'importo (amount) viene preso direttamente dal client. SI RACCOMANDA FORTEMENTE DI AGGIORNARE IL CLIENT PER MAGGIORE SICUREZZA.");
-          if (!legacyAmount || !legacyCurrency || (!customerUserId && !isGuest)) {
-              return res.status(400).json({ error: 'Manca l\'importo, la valuta o l\'ID cliente/stato ospite per la creazione del Payment Intent (flusso legacy).' });
-          }
-          finalAmount = Number(legacyAmount);
-          finalCurrency = legacyCurrency;
-
-          if (isGuest) {
-              paymentIntentMetadata.isGuestOrder = 'true';
-          } else if (customerUserId) {
-              paymentIntentMetadata.customerUserId = customerUserId;
-              paymentIntentMetadata.isGuestOrder = 'false';
-          } else {
-              return res.status(400).json({ error: 'ID cliente o stato ospite richiesto (flusso legacy).' });
-          }
+      } else {
+          // Percorso di fallback se non ci sono né tempGuestCartRef né items
+          return res.status(400).json({ error: 'Mancano gli articoli del carrello o il riferimento temporaneo per il Payment Intent.' });
       }
+
+      // Calcolo finale del subtotale basato sugli orderItems recuperati/forniti
+      let calculatedSubtotal = 0;
+      const orderItemsForMetadata = []; // Dettagli item per i metadati
+
+      for (const item of orderItems) {
+          if (!item.vendorId || typeof item.vendorId !== 'string' || item.vendorId.trim() === '') {
+              return res.status(400).json({ error: `ID venditore mancante o non valido per un articolo del carrello: ${item.productId}` });
+          }
+
+          const productRef = db.collection('offers').doc(item.productId);
+          const productSnap = await productRef.get();
+
+          if (!productSnap.exists) {
+              return res.status(400).json({ error: `Prodotto non trovato nel database: ${item.productId}` });
+          }
+          const productData = productSnap.data();
+          const unitPrice = productData.price; // Prezzo dal DB (validazione lato server)
+          const quantity = item.quantity;
+
+          if (unitPrice <= 0 || quantity <= 0) {
+              return res.status(400).json({ error: `Quantità o prezzo del prodotto non validi per ${productData.productName}` });
+          }
+          calculatedSubtotal += unitPrice * quantity;
+          orderItemsForMetadata.push({
+              productId: item.productId,
+              productName: productData.productName,
+              price: unitPrice,
+              quantity: quantity,
+              imageUrl: productData.productImageUrls ? productData.productImageUrls[0] : (productData.productImageUrl || ''),
+              options: item.options || {}, // Includi le opzioni (varianti)
+              vendorId: item.vendorId // IMPORTANTE: Mantiene il vendorId specifico dell'articolo
+          });
+      }
+
+      finalAmount = calculatedSubtotal + (Number(shipping) || 0);
+
+      // NON INSERIRE orderItemsForMetadata in Stripe metadata per il limite di caratteri!
+      // Verranno recuperati tramite tempGuestCartRef.
 
       // VALIDAZIONE FINALE DELL'IMPORTO
       if (finalAmount <= 0) {
@@ -306,7 +304,7 @@ module.exports = async (req, res) => {
         currency: finalCurrency,
         payment_method_types: ['card'],
         description: description || `Ordine per ${fetchedVendorStoreName}`,
-        metadata: paymentIntentMetadata, // Usa i metadati preparati
+        metadata: paymentIntentMetadata, // Usa i metadati preparati (ora senza cartItems)
       };
 
       // Gestione per Account Connessi (se fetchedStripeAccountId è disponibile)
