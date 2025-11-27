@@ -274,9 +274,8 @@ module.exports = async (req, res) => {
 
         // 3. Extract metadata from the Payment Intent
         const metadata = paymentIntent.metadata;
-        const isGuestOrder = metadata.isGuestOrder === 'true';
-
-        if (!isGuestOrder) {
+        // Verifica esplicita che sia un ordine ospite
+        if (metadata.isGuestOrder !== 'true') { // Modifica qui per essere robusto all'assenza del campo
             return res.status(400).json({ error: 'This API is for guest orders. Logged-in user orders are not handled here.' });
         }
 
@@ -291,14 +290,14 @@ module.exports = async (req, res) => {
             });
         }
 
+        // Recupera i dati dell'ospite e il riferimento al carrello temporaneo dai metadati di Stripe
         const guestName = metadata.guestName;
         const guestSurname = metadata.guestSurname;
         const guestEmail = metadata.guestEmail;
         const guestPhone = metadata.guestPhone;
         const vendorStoreName = metadata.vendorStoreName;
-        // Recupera il riferimento al carrello temporaneo
-        const tempGuestCartRefId = metadata.tempGuestCartRef; 
-        
+        const tempGuestCartRefId = metadata.tempGuestCartRef; // NUOVO: Recupera il riferimento
+
         let cartItems = [];
         if (tempGuestCartRefId) {
             const tempCartDoc = await db.collection('temp_guest_carts').doc(tempGuestCartRefId).get();
@@ -317,7 +316,7 @@ module.exports = async (req, res) => {
             return res.status(400).json({ error: 'Invalid or empty cart data retrieved from temporary storage.' });
         }
         
-        // Reconstruct the shipping address
+        // Reconstruct the shipping address from metadata
         const shippingAddress = new ShippingAddress({
             street: metadata.guestAddress,
             city: metadata.guestCity,
@@ -362,7 +361,6 @@ module.exports = async (req, res) => {
         }
 
         // Calculate fees
-        // Stripe charges are in cents. application_fee_amount is also in cents.
         const serviceFee = paymentIntent.application_fee_amount ? (paymentIntent.application_fee_amount / 100) : 0;
         let calculatedSubtotal = 0;
         cartItems.forEach(item => calculatedSubtotal += item.price * item.quantity);
@@ -473,4 +471,5 @@ module.exports = async (req, res) => {
     } catch (error) {
         console.error('Error during guest order finalization:', error);
         res.status(500).json({ error: error.message || 'Internal server error during order finalization.' });
-    }};
+    }
+};
