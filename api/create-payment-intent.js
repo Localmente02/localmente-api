@@ -15,6 +15,7 @@ if (!admin.apps.length) {
         try {
             firebaseConfig = JSON.parse(firebaseServiceAccountKey);
         } catch (e) {
+            // Tenta di decodificare da Base64 se il parsing JSON diretto fallisce
             try {
                 firebaseConfig = JSON.parse(Buffer.from(firebaseServiceAccountKey, 'base64').toString('utf8'));
             } catch (e2) {
@@ -138,6 +139,12 @@ module.exports = async (req, res) => {
   }
 
   if (req.method === 'POST') {
+    // Aggiungi una verifica che Firebase DB sia inizializzato
+    if (!db) {
+        console.error("Firebase Firestore DB non è stato inizializzato. Impossibile creare Payment Intent o inviare notifiche.");
+        return res.status(500).json({ error: 'Server configuration error: Firebase DB not initialized.' });
+    }
+
     try {
       const { 
         // Campi esistenti per le notifiche
