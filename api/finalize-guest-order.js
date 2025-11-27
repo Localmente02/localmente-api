@@ -1,8 +1,8 @@
 // api/finalize-guest-order.js
-import Stripe from 'stripe';
-import { initializeApp, cert, getApps } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
-import { GeoPoint, Timestamp } from 'firebase-admin/firestore'; 
+// Usa require syntax per consistenza con user's create-payment-intent.js
+const Stripe = require('stripe');
+const admin = require('firebase-admin');
+const { GeoPoint, Timestamp } = admin.firestore; // Correct way to get GeoPoint and Timestamp for admin SDK
 
 // Inizializza Stripe
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
@@ -11,12 +11,12 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 
 // Inizializza Firebase Admin SDK
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-if (!getApps().length) {
-    initializeApp({
+if (!admin.apps.length) {
+    admin.initializeApp({
         credential: cert(serviceAccount)
     });
 }
-const db = getFirestore();
+const db = admin.firestore();
 
 // === MODELLI (Ripetuti qui per auto-contenimento dell'API) ===
 class ShippingAddress {
@@ -204,54 +204,53 @@ function calculateSubtotalForVendor(items) {
 
 // Funzione per gestire la richiesta
 module.exports = async (req, res) => {
-    // Gestione preflight OPTIONS
+    // Set CORS headers for all requests (OPTIONS and POST)
+    res.setHeader('Access-Control-Allow-Origin', '*'); 
+    res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS'); // OPTIONS method is crucial
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Date, X-Api-Version');
+    res.setHeader('Access-Control-Max-Age', '86400');
+
+    // Handle preflight OPTIONS request
     if (req.method === 'OPTIONS') {
-        res.setHeader('Access-Control-Allow-Origin', '*'); // *** CRITICO: AGGIUNTO QUI ***
-        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
-        res.setHeader('Access-Control-Max-Age', '86400');
         return res.status(200).end();
     }
 
-    // Assicurati che le richieste POST abbiano l'header
-    res.setHeader('Access-Control-Allow-Origin', '*'); // *** CRITICO: AGGIUNTO ANCHE QUI ***
-
     if (req.method !== 'POST') {
-        return res.status(405).json({ message: 'Solo richieste POST' });
+        return res.status(405).json({ message: 'Only POST requests are allowed for this endpoint.' });
     }
 
     const { paymentIntentId } = req.body;
 
     if (!paymentIntentId) {
-        return res.status(400).json({ error: 'ID Payment Intent mancante.' });
+        return res.status(400).json({ error: 'Missing Payment Intent ID in request body.' });
     }
 
     try {
-        // 1. Recupera il Payment Intent da Stripe
+        // 1. Retrieve the Payment Intent from Stripe
         const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
 
-        // 2. Controlla lo stato del Payment Intent
+        // 2. Check the status of the Payment Intent
         if (paymentIntent.status !== 'succeeded') {
-            console.error(`Payment Intent ${paymentIntentId} non riuscito. Stato: ${paymentIntent.status}`);
-            return res.status(400).json({ error: `Pagamento non riuscito. Stato: ${paymentIntent.status}` });
+            console.error(`Payment Intent ${paymentIntentId} not succeeded. Status: ${paymentIntent.status}`);
+            return res.status(400).json({ error: `Payment not succeeded. Status: ${paymentIntent.status}` });
         }
 
-        // 3. Estrai i metadati dall'Payment Intent (qui abbiamo i dati del carrello e dell'ospite)
+        // 3. Extract metadata from the Payment Intent
         const metadata = paymentIntent.metadata;
         const isGuestOrder = metadata.isGuestOrder === 'true';
 
         if (!isGuestOrder) {
-            return res.status(400).json({ error: 'Questa API è per gli ordini degli ospiti. Ordine utente loggato non gestito qui.' });
+            return res.status(400).json({ error: 'This API is for guest orders. Logged-in user orders are not handled here.' });
         }
 
-        // Verifica se l'ordine è già stato creato per questo Payment Intent
+        // Check if the order has already been created for this Payment Intent to prevent duplicates
         const existingOrderSnap = await db.collection('orders').where('paymentIntentId', '==', paymentIntentId).limit(1).get();
         if (!existingOrderSnap.empty) {
-            console.log(`Ordine già esistente per Payment Intent ${paymentIntentId}. ID: ${existingOrderSnap.docs[0].id}`);
+            console.log(`Order already exists for Payment Intent ${paymentIntentId}. Order ID: ${existingOrderSnap.docs[0].id}`);
             return res.status(200).json({ 
                 orderId: existingOrderSnap.docs[0].id, 
                 orderNumber: existingOrderSnap.docs[0].data().orderNumber,
-                message: 'Ordine già creato e recuperato.'
+                message: 'Order already created and retrieved.'
             });
         }
 
@@ -259,13 +258,21 @@ module.exports = async (req, res) => {
         const guestSurname = metadata.guestSurname;
         const guestEmail = metadata.guestEmail;
         const guestPhone = metadata.guestPhone;
-        const vendorId = metadata.vendorId; // Questo è l'ID del *singolo* venditore, se l'ordine è singleVendorExpress
         const vendorStoreName = metadata.vendorStoreName;
         const cartItemsString = metadata.cartItems;
         
-        const cartItems = JSON.parse(cartItemsString); // Gli items serializzati
+        let cartItems;
+        try {
+            cartItems = JSON.parse(cartItemsString);
+            if (!Array.isArray(cartItems) || cartItems.length === 0) {
+                throw new Error("Cart items from metadata are invalid or empty.");
+            }
+        } catch (parseError) {
+            console.error("Error parsing cartItems from metadata:", parseError);
+            return res.status(400).json({ error: 'Invalid cart data in metadata.' });
+        }
 
-        // Ricostruisci l'indirizzo di spedizione (senza GeoPoint qui, a meno che non si faccia geocoding)
+        // Reconstruct the shipping address
         const shippingAddress = new ShippingAddress({
             street: metadata.guestAddress,
             city: metadata.guestCity,
@@ -279,15 +286,20 @@ module.exports = async (req, res) => {
             noBell: metadata.guestNoBell === 'true',
         });
 
-        // 4. Inizia la creazione dell'ordine in Firebase
+        // 4. Start creating the order in Firebase
         const batch = db.batch();
-        const mainOrderId = db.collection('orders').doc().id; // Genera un ID per l'ordine principale
-        const orderNumber = `G-${new Date().getTime().toString().slice(-8)}`; // Numero ordine Ospite
+        const mainOrderId = db.collection('orders').doc().id; 
+        const orderNumber = `G-${new Date().getTime().toString().slice(-8)}`; 
 
-        const vendorIdsInvolved = [...new Set(cartItems.map(item => item.vendorId))];
+        // Filter out any invalid/empty vendorIds BEFORE processing
+        const vendorIdsInvolved = [...new Set(cartItems.map(item => item.vendorId).filter(vId => vId && typeof vId === 'string' && vId.trim() !== ''))];
+        if (vendorIdsInvolved.length === 0) {
+            return res.status(400).json({ error: 'No valid vendor IDs found in cart items for order creation.' });
+        }
+
         const allSubOrdersForMainOrder = [];
 
-        // Fetch dei dati dei venditori per i sotto-ordini
+        // Fetch vendor data for sub-orders
         const fetchedVendorsData = {};
         if (vendorIdsInvolved.length > 0) {
             const vendorDocs = await Promise.all(vendorIdsInvolved.map(id => db.collection('vendors').doc(id).get()));
@@ -304,20 +316,20 @@ module.exports = async (req, res) => {
             });
         }
 
-        // Calcola serviceFee e shippingFee
+        // Calculate fees
         const serviceFee = paymentIntent.application_fee_amount ? (paymentIntent.application_fee_amount / 100) : 0;
         let calculatedSubtotal = 0;
         cartItems.forEach(item => calculatedSubtotal += item.price * item.quantity);
         const totalAmount = paymentIntent.amount / 100;
         const calculatedShippingFee = totalAmount - calculatedSubtotal - serviceFee; 
 
-        const initialOrderStatus = 'In Attesa di Preparazione'; // Stato iniziale per tutti i nuovi ordini
+        const initialOrderStatus = 'In Attesa di Preparazione'; // Initial status for new orders
 
         for (const vId of vendorIdsInvolved) {
             const vendorSpecificItems = cartItems.filter(item => item.vendorId === vId);
             const vendorData = fetchedVendorsData[vId];
             if (!vendorData) {
-                console.warn(`Dati venditore ${vId} non trovati per sotto-ordine.`);
+                console.warn(`Vendor data for ${vId} not found for sub-order. Skipping sub-order creation for this vendor.`);
                 continue;
             }
 
@@ -328,7 +340,7 @@ module.exports = async (req, res) => {
             const subOrder = new MarketplaceSubOrderModel({
                 originalOrderId: mainOrderId,
                 orderNumber: orderNumber,
-                customerId: `GUEST-${guestEmail}`, // ID per ospite, basato su email
+                customerId: `GUEST-${guestEmail}`, 
                 customerName: `${guestName} ${guestSurname}`,
                 createdAt: Timestamp.now(),
                 priority: subOrderPriority,
@@ -350,10 +362,10 @@ module.exports = async (req, res) => {
             batch.set(mainOrderSubOrderRef, subOrder.toMap());
         }
 
-        // Crea l'ordine principale
+        // Create the main order
         const mainOrder = new OrderModel({
             id: mainOrderId,
-            customerId: `GUEST-${guestEmail}`, // ID per ospite
+            customerId: `GUEST-${guestEmail}`, 
             customerName: `${guestName} ${guestSurname}`,
             customerEmail: guestEmail,
             customerPhone: guestPhone,
@@ -361,7 +373,7 @@ module.exports = async (req, res) => {
             updatedAt: Timestamp.now(),
             orderNumber: orderNumber,
             orderType: (vendorIdsInvolved.length === 1) ? 'singleVendorExpress' : 'marketplaceConsolidated',
-            paymentMethod: 'card', // Pagato con carta
+            paymentMethod: 'card', 
             itemCount: cartItems.reduce((sum, item) => sum + item.quantity, 0),
             subTotal: calculatedSubtotal,
             shippingFee: calculatedShippingFee,
@@ -382,9 +394,8 @@ module.exports = async (req, res) => {
 
         await batch.commit();
 
-        // 5. Invia notifica email al cliente e ai negozianti
-        console.log(`✅ Ordine Ospite ${mainOrderId} creato con successo in Firebase.`);
-        // Qui dovresti chiamare la tua API per le notifiche email. Esempio:
+        console.log(`✅ Guest Order ${mainOrderId} created successfully in Firebase.`);
+        // Qui potresti chiamare la tua API per le notifiche email. Esempio:
         // await fetch(VERCEL_URLS.ORDER_EMAIL_NOTIFICATION, {
         //     method: 'POST',
         //     headers: {'Content-Type': 'application/json'},
@@ -398,7 +409,7 @@ module.exports = async (req, res) => {
         //         items: mainOrder.items.map(item => item.toFirestore()),
         //         totalPrice: mainOrder.totalPrice,
         //         isGuestOrder: true,
-        //         // Aggiungi tutti i dettagli necessari per le email
+        //         // Add any other necessary details for emails
         //     })
         // });
 
@@ -406,11 +417,11 @@ module.exports = async (req, res) => {
         res.status(200).json({
             orderId: mainOrderId,
             orderNumber: orderNumber,
-            message: 'Ordine creato con successo.'
+            message: 'Order created successfully.'
         });
 
     } catch (error) {
-        console.error('Errore durante la finalizzazione dell\'ordine ospite:', error);
-        res.status(500).json({ error: error.message || 'Errore interno del server durante la finalizzazione dell\'ordine.' });
+        console.error('Error during guest order finalization:', error);
+        res.status(500).json({ error: error.message || 'Internal server error during order finalization.' });
     }
 };
