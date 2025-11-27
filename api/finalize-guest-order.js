@@ -2,6 +2,8 @@
 // Usa require syntax per consistenza con user's create-payment-intent.js
 const Stripe = require('stripe');
 const admin = require('firebase-admin');
+// Corretto: importare cert direttamente da firebase-admin
+const { cert } = require('firebase-admin/app'); 
 const { GeoPoint, Timestamp } = admin.firestore; // Correct way to get GeoPoint and Timestamp for admin SDK
 
 // Inizializza Stripe
@@ -31,7 +33,7 @@ if (!admin.apps.length) {
     if (serviceAccount) {
         try {
             admin.initializeApp({
-                credential: admin.credential.cert(serviceAccount)
+                credential: admin.credential.cert(serviceAccount) // Corretto qui
             });
             db = admin.firestore();
             console.log("Firebase Admin SDK inizializzato con successo in finalize-guest-order.");
@@ -237,7 +239,7 @@ module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*'); 
     res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS'); // OPTIONS method is crucial
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Date, X-Api-Version');
-    res.setHeader('Access-Control-Max-Age', '86400');
+    res.setHeader('Access-Control-Allow-Max-Age', '86400');
 
     // Handle preflight OPTIONS request
     if (req.method === 'OPTIONS') {
@@ -294,19 +296,27 @@ module.exports = async (req, res) => {
         const guestEmail = metadata.guestEmail;
         const guestPhone = metadata.guestPhone;
         const vendorStoreName = metadata.vendorStoreName;
-        const cartItemsString = metadata.cartItems;
+        // Recupera il riferimento al carrello temporaneo
+        const tempGuestCartRefId = metadata.tempGuestCartRef; 
         
-        let cartItems;
-        try {
-            cartItems = JSON.parse(cartItemsString);
-            if (!Array.isArray(cartItems) || cartItems.length === 0) {
-                throw new Error("Cart items from metadata are invalid or empty.");
+        let cartItems = [];
+        if (tempGuestCartRefId) {
+            const tempCartDoc = await db.collection('temp_guest_carts').doc(tempGuestCartRefId).get();
+            if (tempCartDoc.exists) {
+                cartItems = tempCartDoc.data().items;
+            } else {
+                console.error(`Temporary guest cart ${tempGuestCartRefId} not found!`);
+                return res.status(400).json({ error: `Temporary guest cart ${tempGuestCartRefId} not found.` });
             }
-        } catch (parseError) {
-            console.error("Error parsing cartItems from metadata:", parseError);
-            return res.status(400).json({ error: 'Invalid cart data in metadata.' });
+        } else {
+            console.error("No tempGuestCartRef found in metadata for guest order!");
+            return res.status(400).json({ error: "Missing temporary guest cart reference in payment intent metadata." });
         }
 
+        if (!Array.isArray(cartItems) || cartItems.length === 0) {
+            return res.status(400).json({ error: 'Invalid or empty cart data retrieved from temporary storage.' });
+        }
+        
         // Reconstruct the shipping address
         const shippingAddress = new ShippingAddress({
             street: metadata.guestAddress,
@@ -428,6 +438,10 @@ module.exports = async (req, res) => {
         const mainOrderRef = db.collection('orders').doc(mainOrderId);
         batch.set(mainOrderRef, mainOrder.toFirestore());
 
+        // Elimina il documento del carrello ospite temporaneo
+        batch.delete(db.collection('temp_guest_carts').doc(tempGuestCartRefId));
+        console.log(`✅ Temporary guest cart ${tempGuestCartRefId} deleted.`);
+
         await batch.commit();
 
         console.log(`✅ Guest Order ${mainOrderId} created successfully in Firebase.`);
@@ -459,5 +473,4 @@ module.exports = async (req, res) => {
     } catch (error) {
         console.error('Error during guest order finalization:', error);
         res.status(500).json({ error: error.message || 'Internal server error during order finalization.' });
-    }
-};
+    }};
