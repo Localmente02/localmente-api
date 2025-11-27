@@ -2,7 +2,7 @@
 import Stripe from 'stripe';
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
-import { GeoPoint, Timestamp } from 'firebase-admin/firestore'; // Importa GeoPoint e Timestamp
+import { GeoPoint, Timestamp } from 'firebase-admin/firestore'; 
 
 // Inizializza Stripe
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
@@ -204,6 +204,18 @@ function calculateSubtotalForVendor(items) {
 
 // Funzione per gestire la richiesta
 module.exports = async (req, res) => {
+    // Gestione preflight OPTIONS
+    if (req.method === 'OPTIONS') {
+        res.setHeader('Access-Control-Allow-Origin', '*'); // *** CRITICO: AGGIUNTO QUI ***
+        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
+        res.setHeader('Access-Control-Max-Age', '86400');
+        return res.status(200).end();
+    }
+
+    // Assicurati che le richieste POST abbiano l'header
+    res.setHeader('Access-Control-Allow-Origin', '*'); // *** CRITICO: AGGIUNTO ANCHE QUI ***
+
     if (req.method !== 'POST') {
         return res.status(405).json({ message: 'Solo richieste POST' });
     }
@@ -229,7 +241,6 @@ module.exports = async (req, res) => {
         const isGuestOrder = metadata.isGuestOrder === 'true';
 
         if (!isGuestOrder) {
-            // Questa API è specifica per gli ordini ospiti. Se è un utente loggato, un webhook dovrebbe gestire.
             return res.status(400).json({ error: 'Questa API è per gli ordini degli ospiti. Ordine utente loggato non gestito qui.' });
         }
 
@@ -248,12 +259,10 @@ module.exports = async (req, res) => {
         const guestSurname = metadata.guestSurname;
         const guestEmail = metadata.guestEmail;
         const guestPhone = metadata.guestPhone;
-        const vendorId = metadata.vendorId;
+        const vendorId = metadata.vendorId; // Questo è l'ID del *singolo* venditore, se l'ordine è singleVendorExpress
         const vendorStoreName = metadata.vendorStoreName;
         const cartItemsString = metadata.cartItems;
-        const shippingAmount = parseFloat(paymentIntent.shipping?.amount_total / 100 || 0); // O dal metadata se lo passi
-        const totalAmount = paymentIntent.amount / 100;
-
+        
         const cartItems = JSON.parse(cartItemsString); // Gli items serializzati
 
         // Ricostruisci l'indirizzo di spedizione (senza GeoPoint qui, a meno che non si faccia geocoding)
@@ -263,8 +272,11 @@ module.exports = async (req, res) => {
             province: metadata.guestProvince,
             zip: metadata.guestCap,
             country: metadata.guestCountry,
-            phone: guestPhone,
-            // Aggiungi altri campi se presenti nei metadati
+            phoneNumber: guestPhone, 
+            floor: metadata.guestFloor || null,
+            deliveryNotes: metadata.guestDeliveryNotes || null,
+            hasDog: metadata.guestHasDog === 'true',
+            noBell: metadata.guestNoBell === 'true',
         });
 
         // 4. Inizia la creazione dell'ordine in Firebase
@@ -292,13 +304,12 @@ module.exports = async (req, res) => {
             });
         }
 
-        // Calcola serviceFee e shippingFee (qui dovresti replicare la logica di calcolo del frontend)
-        // Per ora, useremo una stima o cercheremo di estrarli dal PaymentIntent.
-        // PaymentIntent.application_fee_amount è la commissione di Stripe Connect.
+        // Calcola serviceFee e shippingFee
         const serviceFee = paymentIntent.application_fee_amount ? (paymentIntent.application_fee_amount / 100) : 0;
         let calculatedSubtotal = 0;
         cartItems.forEach(item => calculatedSubtotal += item.price * item.quantity);
-        const calculatedShippingFee = totalAmount - calculatedSubtotal - serviceFee; // Stima
+        const totalAmount = paymentIntent.amount / 100;
+        const calculatedShippingFee = totalAmount - calculatedSubtotal - serviceFee; 
 
         const initialOrderStatus = 'In Attesa di Preparazione'; // Stato iniziale per tutti i nuovi ordini
 
@@ -357,7 +368,7 @@ module.exports = async (req, res) => {
             serviceFee: serviceFee,
             totalPrice: totalAmount,
             status: initialOrderStatus,
-            orderNotes: metadata.orderNotes || '', // Se avevi campi per le note nell'ospite
+            orderNotes: metadata.orderNotes || '', 
             shippingAddress: shippingAddress,
             items: cartItems.map(item => new OrderItem(item)),
             vendorId: (vendorIdsInvolved.length === 1) ? vendorIdsInvolved[0] : null,
@@ -372,16 +383,23 @@ module.exports = async (req, res) => {
         await batch.commit();
 
         // 5. Invia notifica email al cliente e ai negozianti
-        // Questa parte è molto importante, e dovresti riattivare la tua funzione `VERCEL_TRIGGER_ORDER_EMAIL_NOTIFICATION_URL` se l'avevi disabilitata
-        // Potresti anche voler inviare un'email al cliente ospite qui per la conferma.
-        // Per ora, faccio un console.log per indicare il punto.
         console.log(`✅ Ordine Ospite ${mainOrderId} creato con successo in Firebase.`);
-        // Qui dovresti chiamare la tua API per le notifiche email
-        // Esempio:
+        // Qui dovresti chiamare la tua API per le notifiche email. Esempio:
         // await fetch(VERCEL_URLS.ORDER_EMAIL_NOTIFICATION, {
         //     method: 'POST',
         //     headers: {'Content-Type': 'application/json'},
-        //     body: JSON.stringify({ orderId: mainOrderId, ...dati per email... })
+        //     body: JSON.stringify({
+        //         orderId: mainOrderId,
+        //         vendorIds: vendorIdsInvolved,
+        //         customerName: mainOrder.customerName,
+        //         customerEmail: mainOrder.customerEmail,
+        //         customerPhone: mainOrder.customerPhone,
+        //         shippingAddress: mainOrder.shippingAddress.toFirestore(),
+        //         items: mainOrder.items.map(item => item.toFirestore()),
+        //         totalPrice: mainOrder.totalPrice,
+        //         isGuestOrder: true,
+        //         // Aggiungi tutti i dettagli necessari per le email
+        //     })
         // });
 
 
