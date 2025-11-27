@@ -119,8 +119,9 @@ async function sendPushNotification(userId, title, body, data = {}, notification
 // --- Fine Funzione sendPushNotification ---
 
 
-// --- Funzione per impostare gli header CORS ---
+// --- Funzione per impostare gli header CORS (AGGIUNTO Access-Control-Allow-Origin: *) ---
 function setCorsHeaders(res) {
+    res.setHeader('Access-Control-Allow-Origin', '*'); // *** CRITICO: AGGIUNTO QUI ***
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
     res.setHeader('Access-Control-Max-Age', '86400');
@@ -196,7 +197,7 @@ module.exports = async (req, res) => {
               const vendorData = vendorDoc.data();
               fetchedVendorStoreName = vendorData.store_name || fetchedVendorStoreName;
               // Se l'ID dell'account connesso non è esplicitamente passato, prova a recuperarlo dai dati del venditore
-              if (!fetchedStripeAccountId && vendorData.stripeAccountId) { // Corretto da stripe_account_id a stripeAccountId
+              if (!fetchedStripeAccountId && vendorData.stripeAccountId) { 
                 fetchedStripeAccountId = vendorData.stripeAccountId;
               }
           } else {
