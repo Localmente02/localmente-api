@@ -10,13 +10,42 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 });
 
 // Inizializza Firebase Admin SDK
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+let db;
 if (!admin.apps.length) {
-    admin.initializeApp({
-        credential: cert(serviceAccount)
-    });
+    let serviceAccount = null;
+    const firebaseServiceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+
+    if (firebaseServiceAccountKey) {
+        try {
+            serviceAccount = JSON.parse(firebaseServiceAccountKey);
+        } catch (e) {
+            // Tenta di decodificare da Base64 se il parsing JSON diretto fallisce
+            try {
+                serviceAccount = JSON.parse(Buffer.from(firebaseServiceAccountKey, 'base64').toString('utf8'));
+            } catch (e2) {
+                console.error("FIREBASE_SERVICE_ACCOUNT_KEY: Errore nel parsing (non è né JSON diretto né Base64 valido):", e2.message);
+            }
+        }
+    }
+
+    if (serviceAccount) {
+        try {
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount)
+            });
+            db = admin.firestore();
+            console.log("Firebase Admin SDK inizializzato con successo in finalize-guest-order.");
+        } catch (initError) {
+            console.error("Errore nell'inizializzazione finale di Firebase Admin SDK in finalize-guest-order:", initError.message);
+        }
+    } else {
+        console.error("FIREBASE_SERVICE_ACCOUNT_KEY non trovata o non valida. Firebase Admin SDK non inizializzato in finalize-guest-order.");
+    }
+} else {
+    db = admin.firestore();
+    console.log("Firebase Admin SDK già inizializzato, recupero istanza Firestore in finalize-guest-order.");
 }
-const db = admin.firestore();
+// --- FINE FIX INIZIALIZZAZIONE FIREBASE ADMIN SDK ---
 
 // === MODELLI (Ripetuti qui per auto-contenimento dell'API) ===
 class ShippingAddress {
@@ -225,6 +254,12 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'Missing Payment Intent ID in request body.' });
     }
 
+    // Aggiungi una verifica che Firebase DB sia inizializzato
+    if (!db) {
+        console.error("Firebase Firestore DB non è stato inizializzato. Impossibile procedere.");
+        return res.status(500).json({ error: 'Server configuration error: Firebase DB not initialized.' });
+    }
+
     try {
         // 1. Retrieve the Payment Intent from Stripe
         const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
@@ -317,6 +352,7 @@ module.exports = async (req, res) => {
         }
 
         // Calculate fees
+        // Stripe charges are in cents. application_fee_amount is also in cents.
         const serviceFee = paymentIntent.application_fee_amount ? (paymentIntent.application_fee_amount / 100) : 0;
         let calculatedSubtotal = 0;
         cartItems.forEach(item => calculatedSubtotal += item.price * item.quantity);
