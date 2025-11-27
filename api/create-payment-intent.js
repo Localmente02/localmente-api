@@ -121,7 +121,7 @@ async function sendPushNotification(userId, title, body, data = {}, notification
 
 // --- Funzione per impostare gli header CORS (AGGIUNTO Access-Control-Allow-Origin: *) ---
 function setCorsHeaders(res) {
-    res.setHeader('Access-Control-Allow-Origin', '*'); // *** CRITICO: AGGIUNTO QUI ***
+    res.setHeader('Access-Control-Allow-Origin', '*'); 
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
     res.setHeader('Access-Control-Max-Age', '86400');
@@ -150,7 +150,7 @@ module.exports = async (req, res) => {
         // Campi NUOVI per il calcolo sicuro del pagamento (PREFERITO)
         items,        // Array di { productId, quantity, price, vendorId, options }
         shipping,     // Costo di spedizione forfettario
-        vendorId,     // L'ID del venditore
+        vendorId,     // L'ID del venditore (può essere vuoto se consolidated marketplace)
         isGuest,      // Flag booleano per checkout ospite
         guestData,    // Oggetto con i dettagli di contatto/consegna dell'ospite
 
@@ -185,27 +185,27 @@ module.exports = async (req, res) => {
       let finalCurrency = 'eur'; // Valuta predefinita per il marketplace
       let paymentIntentMetadata = { ...metadata }; // Inizia con eventuali metadati esistenti
 
-      // Popola sempre vendorId e vendorStoreName nei metadati
+      // Inizializzazione per recupero dati venditore
       let fetchedVendorStoreName = 'Negozio Sconosciuto';
-      let fetchedStripeAccountId = stripeAccountId; // Usa quello esistente se passato, altrimenti lo cerchiamo
-      let fetchedApplicationFeeAmount = applicationFeeAmount; // Usa quello esistente se passato
+      let fetchedStripeAccountId = stripeAccountId; 
+      let fetchedApplicationFeeAmount = applicationFeeAmount; 
 
       // Recupera i dettagli del venditore (per nome negozio e potenziali dettagli di account connesso/commissioni)
-      if (vendorId && db) { // Assicurati che db sia inizializzato
+      // Questo blocco ora gestisce anche il caso di più venditori (vendorId dalla root può essere null)
+      if (vendorId && db) { // Solo se vendorId è fornito a livello di root (singleVendorExpress)
           const vendorDoc = await db.collection('vendors').doc(vendorId).get();
           if (vendorDoc.exists) {
               const vendorData = vendorDoc.data();
               fetchedVendorStoreName = vendorData.store_name || fetchedVendorStoreName;
-              // Se l'ID dell'account connesso non è esplicitamente passato, prova a recuperarlo dai dati del venditore
               if (!fetchedStripeAccountId && vendorData.stripeAccountId) { 
                 fetchedStripeAccountId = vendorData.stripeAccountId;
               }
           } else {
-              console.warn(`Venditore ${vendorId} non trovato. Proseguo con il nome del venditore predefinito.`);
+              console.warn(`Venditore root ${vendorId} non trovato. Proseguo con il nome del venditore predefinito.`);
           }
       }
-      paymentIntentMetadata.vendorId = vendorId;
-      paymentIntentMetadata.vendorStoreName = fetchedVendorStoreName;
+      paymentIntentMetadata.vendorId = vendorId; // Salva l'ID del venditore root nei metadati
+      paymentIntentMetadata.vendorStoreName = fetchedVendorStoreName; // Salva il nome del venditore root nei metadati
 
 
       // PERCORSO DI CALCOLO SICURO DEL PAGAMENTO: Se gli 'items' sono forniti (NUOVO E PREFERITO)
@@ -213,11 +213,16 @@ module.exports = async (req, res) => {
           let calculatedSubtotal = 0;
           const orderItemsForMetadata = []; // Dettagli item per i metadati
 
-          if (!db) { // Assicurati che Firestore sia inizializzato prima di usarlo
+          if (!db) { 
              throw new Error("Firebase Firestore non inizializzato per la ricerca del prezzo del prodotto.");
           }
 
           for (const item of items) {
+              // Validazione critica del vendorId dell'articolo
+              if (!item.vendorId || typeof item.vendorId !== 'string' || item.vendorId.trim() === '') {
+                  return res.status(400).json({ error: `ID venditore mancante o non valido per un articolo del carrello: ${item.productId}` });
+              }
+
               const productRef = db.collection('offers').doc(item.productId);
               const productSnap = await productRef.get();
 
@@ -238,15 +243,14 @@ module.exports = async (req, res) => {
                   price: unitPrice,
                   quantity: quantity,
                   imageUrl: productData.productImageUrls ? productData.productImageUrls[0] : '',
-                  options: item.options || {} // Includi le opzioni (varianti)
+                  options: item.options || {}, // Includi le opzioni (varianti)
+                  vendorId: item.vendorId // IMPORTANTE: Mantiene il vendorId specifico dell'articolo
               });
           }
 
-          // Aggiungi costo di spedizione (assicurati che sia un numero)
           finalAmount = calculatedSubtotal + (Number(shipping) || 0);
           paymentIntentMetadata.cartItems = JSON.stringify(orderItemsForMetadata); // Item dettagliati nei metadati
 
-          // Metadati specifici per gli ospiti
           if (isGuest) {
               paymentIntentMetadata.isGuestOrder = 'true';
               if (guestData) {
@@ -261,7 +265,7 @@ module.exports = async (req, res) => {
                   paymentIntentMetadata.guestEmail = guestData.email;
               }
           } else if (customerUserId) {
-              paymentIntentMetadata.customerUserId = customerUserId; // Per utenti loggati
+              paymentIntentMetadata.customerUserId = customerUserId;
               paymentIntentMetadata.isGuestOrder = 'false';
           } else {
               return res.status(400).json({ error: 'ID cliente o stato ospite richiesto quando vengono forniti gli articoli.' });
