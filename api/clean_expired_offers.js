@@ -332,4 +332,5 @@ module.exports = async (req, res) => {
             console.warn(`[Vercel Function] Azione non riconosciuta: "${action}"`);
             return res.status(400).send('<h1>400 Bad Request</h1><p>Azione Vercel Function non valida.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>', { headers: { 'Content-Type': 'text/html' } });
     }
-};
+}
+  ;
