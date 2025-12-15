@@ -1,8 +1,9 @@
-
 // api/clean_expired_offers.js
 
-// Importa la libreria Firebase Admin SDK per parlare con Firestore
+// Importa le librerie necessarie
 const admin = require('firebase-admin');
+const fetch = require('node-fetch'); // Necessario per scaricare i file HTML dal tuo frontend
+const path = require('path'); // Per gestire i percorsi dei file HTML
 
 // Variabile globale per il database di Firestore
 let db;
@@ -41,76 +42,282 @@ if (!admin.apps.length) {
   db = admin.firestore();
 }
 
-// Funzione principale che verrà eseguita da Vercel
-module.exports = async (req, res) => {
-  // Blocco di sicurezza: solo Vercel Cron può eseguire questa funzione
-  // Controlla un "segreto" che imposteremo nelle variabili d'ambiente di Vercel
-  const cronSecret = process.env.CRON_SECRET;
-  const authHeader = req.headers['authorization'];
+// Funzione helper per determinare se il dispositivo è mobile (basato sul user-agent)
+function isMobile(userAgent) {
+    return /Mobi|Android|iPhone|iPad|iPod|BlackBerry|Opera Mini|Windows Phone/i.test(userAgent);
+}
 
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-    console.warn('Tentativo di accesso non autorizzato alla funzione Cron.');
-    return res.status(401).json({ error: 'Accesso non autorizzato.' });
-  }
+// Funzione helper per generare colori light/dark/gradient dal colore base
+function generateVendorColors(baseColor) {
+    const defaultCivoraColors = {
+        primary: '#FF6600',
+        light: '#FF8533',
+        dark: '#E65C00',
+        gradient: 'linear-gradient(135deg, #FF8533 0%, #E65C00 100%)'
+    };
 
-  console.log("🚀 Inizio pulizia offerte scadute...");
-
-  if (!db) {
-    console.error("DB non inizializzato. Impossibile procedere.");
-    return res.status(500).json({ error: "Errore interno del server: DB non pronto." });
-  }
-
-  const now = admin.firestore.Timestamp.now();
-  let movedOffersCount = 0;
-  const batch = db.batch();
-
-  try {
-    // 1. Trova tutte le offerte la cui data di fine è passata
-    const expiredByDateQuery = db.collection('alimentari_offers').where('endDate', '<', now);
-    const expiredByDateSnapshot = await expiredByDateQuery.get();
-
-    expiredByDateSnapshot.forEach(doc => {
-      console.log(`⏳ Trovata offerta scaduta per data: ${doc.id}`);
-      const offerData = doc.data();
-      const expiredOfferRef = db.collection('expired_offers_trash').doc(doc.id);
-      
-      // Aggiungi l'offerta al "cestino"
-      batch.set(expiredOfferRef, { ...offerData, expiredAt: now, reason: 'Date Expired' });
-      // Elimina l'offerta dalla collezione attiva
-      batch.delete(doc.ref);
-      movedOffersCount++;
-    });
-
-    // 2. Trova tutte le offerte con quantità esaurita (quantity <= 0)
-    const expiredByQuantityQuery = db.collection('alimentari_offers').where('quantity', '<=', 0);
-    const expiredByQuantitySnapshot = await expiredByQuantityQuery.get();
-    
-    expiredByQuantitySnapshot.forEach(doc => {
-      // Controlla se l'abbiamo già spostata per la data, per non fare doppi conteggi
-      if (!expiredByDateSnapshot.docs.some(d => d.id === doc.id)) {
-        console.log(`🗑️ Trovata offerta con quantità esaurita: ${doc.id}`);
-        const offerData = doc.data();
-        const expiredOfferRef = db.collection('expired_offers_trash').doc(doc.id);
-        
-        batch.set(expiredOfferRef, { ...offerData, expiredAt: now, reason: 'Quantity Depleted' });
-        batch.delete(doc.ref);
-        movedOffersCount++;
-      }
-    });
-
-    // Esegui tutte le operazioni in un colpo solo
-    if (movedOffersCount > 0) {
-      await batch.commit();
-      console.log(`✅ Successo! Spostate ${movedOffersCount} offerte nel cestino.`);
-    } else {
-      console.log("👍 Nessuna offerta scaduta da pulire oggi.");
+    if (!baseColor || baseColor.toLowerCase() === 'default') {
+        return defaultCivoraColors;
     }
 
-    // Rispondi con successo
-    return res.status(200).json({ success: true, message: `Spostate ${movedOffersCount} offerte nel cestino.` });
+    // Funzioni helper per manipolare colori esadecimali (le stesse che erano nel tuo JS client)
+    const hexToRgb = hex => {
+        if (!hex || typeof hex !== 'string' || !hex.startsWith('#')) return { r: 0, g: 0, b: 0 };
+        let r = 0, g = 0, b = 0;
+        if (hex.length === 4) {
+            r = parseInt(hex[1] + hex[1], 16);
+            g = parseInt(hex[2] + hex[2], 16);
+            b = parseInt(hex[3] + hex[3], 16);
+        } else if (hex.length === 7) {
+            r = parseInt(hex.substring(1, 3), 16);
+            g = parseInt(hex.substring(3, 5), 16);
+            b = parseInt(hex.substring(5, 7), 16);
+        }
+        return { r, g, b };
+    };
 
-  } catch (error) {
-    console.error("❌ Errore durante la pulizia delle offerte:", error);
-    return res.status(500).json({ success: false, error: error.message });
-  }
+    const rgbToHex = (r, g, b) => {
+        r = Math.max(0, Math.min(255, r));
+        g = Math.max(0, Math.min(255, g));
+        b = Math.max(0, Math.min(255, b));
+        return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase();
+    };
+
+    const adjustColorBrightness = (hex, percent) => {
+        if (!hex || typeof hex !== 'string' || !hex.startsWith('#')) {
+            return hex;
+        }
+        let { r, g, b } = hexToRgb(hex);
+
+        r = Math.round(r * (100 + percent) / 100);
+        g = Math.round(g * (100 + percent) / 100);
+        b = Math.round(b * (100 + percent) / 100);
+
+        return rgbToHex(r, g, b);
+    };
+
+    try {
+        const lightColor = adjustColorBrightness(baseColor, 20); 
+        const darkColor = adjustColorBrightness(baseColor, -20); 
+
+        return {
+            primary: baseColor,
+            light: lightColor,
+            dark: darkColor,
+            gradient: `linear-gradient(135deg, ${lightColor} 0%, ${darkColor} 100%)`
+        };
+    } catch (e) {
+        console.warn("Errore nella derivazione colori, usando default:", e);
+        return defaultCivoraColors; // Fallback in caso di errore nella derivazione
+    }
+}
+
+
+// Funzione principale che verrà eseguita da Vercel
+module.exports = async (req, res) => {
+    // === Controllo per vedere se è una richiesta di pagina negozio (link /negozio/:slug) ===
+    // La chiave `req.query.slug` o `req.params.slug` potrebbe non essere presente direttamente
+    // in Vercel se la request.url viene passata in un certo modo dalla rewrite.
+    // Il modo più robusto è controllare la `req.url` originale.
+    const isStorePageRequest = req.url.startsWith('/negozio/');
+
+    if (isStorePageRequest) {
+        // --- LOGICA PER SERVIRE LA PAGINA DEL NEGOZIO (TUA IDEA GENIALE!) ---
+        res.set('Content-Type', 'text/html'); // Impostiamo l'intestazione
+
+        // Estraiamo lo slug dall'URL
+        const slugMatch = req.url.match(/\/negozio\/([a-zA-Z0-9_-]+)/);
+        const slug = slugMatch ? slugMatch[1] : null;
+
+        if (!slug) {
+            console.error("Errore: slug non estratto dalla URL per richiesta negozio.");
+            return res.status(404).send('<h1>404 Not Found</h1><p>Negozio non specificato nell\'URL.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>');
+        }
+
+        try {
+            // 1. Trova il venditore nel database usando lo slug
+            const vendorsRef = db.collection('vendors');
+            const querySnapshot = await vendorsRef.where('slug', '==', slug).limit(1).get();
+
+            if (querySnapshot.empty) {
+                console.warn(`Venditore con slug "${slug}" non trovato.`);
+                return res.status(404).send('<h1>404 Not Found</h1><p>Il negozio che cerchi non esiste su Civora.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>');
+            }
+
+            const vendorDoc = querySnapshot.docs[0];
+            const vendorData = vendorDoc.data();
+            const vendorId = vendorDoc.id; // L'ID effettivo del documento del venditore
+            const shopColor = vendorData.shopColor || '#FF6600'; // Colore di default Civora se non specificato
+            const userType = vendorData.userType || 'negoziante'; // Tipo di negoziante per scegliere la pagina giusta
+
+            // 2. Determina la versione mobile o desktop della pagina HTML
+            const userAgent = req.headers['user-agent'] || '';
+            const isMobileDevice = isMobile(userAgent);
+
+            // Determina il nome base del file HTML basandoti su userType
+            let pageNameBase = 'vendor_store_detail'; 
+            switch (userType) {
+                case 'alimentari':
+                    pageNameBase = 'alimentari_detail';
+                    break;
+                case 'mercato_fresco':
+                    pageNameBase = 'mercato_fresco_detail';
+                    break;
+                case 'noleggio': // O il tuo tipo per noleggio
+                    pageNameBase = 'noleggio_detail';
+                    break;
+                case 'used_negoziante': // Per i negozi di usato
+                    pageNameBase = 'used_vendor_store_detail';
+                    break;
+                // Aggiungi altri casi per altri userType se hanno pagine di dettaglio diverse
+                default:
+                    pageNameBase = 'vendor_store_detail'; 
+                    break;
+            }
+
+            let htmlFileName;
+            // La logica per i suffissi _mobile/_desktop o nessuna suffisso per desktop "implicito"
+            // Questa parte DEVE riflettere la struttura ESATTA dei tuoi file HTML sul Firebase Hosting.
+            // In base ai nomi che mi hai fornito (es. alimentari_detail.html per desktop, alimentari_detail_mobile.html per mobile)
+            // faremo così:
+            if (isMobileDevice) {
+                htmlFileName = `${pageNameBase}_mobile.html`;
+            } else {
+                // Per desktop, alcune pagine non hanno il suffisso _desktop (es. alimentari_detail.html)
+                // Usiamo il nome base SENZA suffisso se non esiste _desktop (come il tuo alimentari_detail.html)
+                // Se invece esiste una versione _desktop (come vendor_store_detail_desktop.html), usiamo quella.
+                // Questa logica assume che il file senza suffisso sia la versione desktop per alcuni tipi.
+                if (pageNameBase === 'alimentari_detail' || pageNameBase === 'mercato_fresco_detail' || pageNameBase === 'noleggio_detail') {
+                     htmlFileName = `${pageNameBase}.html`; // Desktop "implicito"
+                } else {
+                     htmlFileName = `${pageNameBase}_desktop.html`; // Desktop "esplicito"
+                }
+            }
+
+            // Aggiungi un log per verificare il nome del file HTML che la funzione sta cercando di scaricare
+            console.log(`Tentativo di scaricare HTML per ${userType} (Dispositivo mobile: ${isMobileDevice}): ${htmlFileName}`);
+
+            // 3. Scarica il file HTML del negozio dal tuo Firebase Hosting (FRONTEND_BASE_URL)
+            // Assicurati che FRONTEND_BASE_URL sia impostata nelle variabili d'ambiente di Vercel
+            const frontendBaseUrl = process.env.FRONTEND_BASE_URL;
+            if (!frontendBaseUrl) {
+                console.error("FRONTEND_BASE_URL non impostata nelle variabili d'ambiente di Vercel!");
+                return res.status(500).send('<h1>500 Internal Server Error</h1><p>Configurazione del server non completata. Contatta l\'amministrazione.</p>');
+            }
+            const htmlFullUrl = `${frontendBaseUrl}/${htmlFileName}`;
+            console.log(`Scarico HTML da: ${htmlFullUrl}`);
+            
+            const htmlResponse = await fetch(htmlFullUrl);
+            if (!htmlResponse.ok) {
+                console.error(`Errore nel download del file HTML (${htmlResponse.status}): ${htmlFullUrl}`);
+                // Tentativo di fallback con la homepage di Civora per evitare pagina bianca
+                if (htmlResponse.status === 404) {
+                    return res.status(404).send(`<h1>404 Not Found</h1><p>La pagina specifica per questo negozio non è stata trovata. (${htmlFileName})</p><p>Torna alla <a href="${frontendBaseUrl}">Homepage Civora</a></p>`);
+                }
+                throw new Error(`Impossibile scaricare il file HTML: ${htmlResponse.statusText}`);
+            }
+            let htmlContent = await htmlResponse.text();
+
+            // 4. Prepara lo stile dinamico con i colori del negoziante
+            const vendorColors = generateVendorColors(shopColor);
+            const dynamicStyle = `
+                <style id="vendor-dynamic-styles">
+                    :root {
+                        --vendor-primary-color: ${vendorColors.primary};
+                        --vendor-primary-light: ${vendorColors.light};
+                        --vendor-primary-dark: ${vendorColors.dark};
+                        --vendor-primary-gradient: ${vendorColors.gradient};
+                        --price-color: ${vendorColors.primary}; /* Adatta come desideri */
+                    }
+                </style>
+            `;
+
+            // 5. Inietta lo stile dinamico nell'HTML e i parametri ID e COLOR
+            // Cerca il segnaposto '<!-- VENDOR_STYLE_INJECTION -->' e sostituiscilo
+            htmlContent = htmlContent.replace('<!-- VENDOR_STYLE_INJECTION -->', dynamicStyle);
+
+            // Aggiungiamo anche l'ID del venditore e il colore come data attributes al body
+            // Questo è utile per la logica JS lato client che potrebbe aver bisogno dell'ID o del colore
+            htmlContent = htmlContent.replace('<body', `<body data-vendor-id="${vendorId}" data-vendor-color="${shopColor}"`);
+
+            // 6. Invia la pagina HTML modificata all'utente
+            return res.status(200).send(htmlContent);
+
+        } catch (error) {
+            console.error("Errore critico nel rendere la pagina del negozio:", error);
+            return res.status(500).send('<h1>500 Internal Server Error</h1><p>Si è verificato un problema tecnico inaspettato nel caricamento del negozio.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>');
+        }
+
+    } else {
+        // --- LOGICA ESISTENTE PER LA PULIZIA CRON (COME PRIMA) ---
+        // Blocco di sicurezza: solo Vercel Cron può eseguire questa funzione
+        const cronSecret = process.env.CRON_SECRET;
+        const authHeader = req.headers['authorization'];
+
+        if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+            console.warn('Tentativo di accesso non autorizzato alla funzione Cron.');
+            return res.status(401).json({ error: 'Accesso non autorizzato.' });
+        }
+
+        console.log("🚀 Inizio pulizia offerte scadute...");
+
+        if (!db) {
+            console.error("DB non inizializzato. Impossibile procedere.");
+            return res.status(500).json({ error: "Errore interno del server: DB non pronto." });
+        }
+
+        const now = admin.firestore.Timestamp.now();
+        let movedOffersCount = 0;
+        const batch = db.batch();
+
+        try {
+            // 1. Trova tutte le offerte la cui data di fine è passata
+            const expiredByDateQuery = db.collection('alimentari_offers').where('endDate', '<', now);
+            const expiredByDateSnapshot = await expiredByDateQuery.get();
+
+            expiredByDateSnapshot.forEach(doc => {
+                console.log(`⏳ Trovata offerta scaduta per data: ${doc.id}`);
+                const offerData = doc.data();
+                const expiredOfferRef = db.collection('expired_offers_trash').doc(doc.id);
+                
+                // Aggiungi l'offerta al "cestino"
+                batch.set(expiredOfferRef, { ...offerData, expiredAt: now, reason: 'Date Expired' });
+                // Elimina l'offerta dalla collezione attiva
+                batch.delete(doc.ref);
+                movedOffersCount++;
+            });
+
+            // 2. Trova tutte le offerte con quantità esaurita (quantity <= 0)
+            const expiredByQuantityQuery = db.collection('alimentari_offers').where('quantity', '<=', 0);
+            const expiredByQuantitySnapshot = await expiredByQuantityQuery.get();
+            
+            expiredByQuantitySnapshot.forEach(doc => {
+                // Controlla se l'abbiamo già spostata per la data, per non fare doppi conteggi
+                if (!expiredByDateSnapshot.docs.some(d => d.id === doc.id)) {
+                    console.log(`🗑️ Trovata offerta con quantità esaurita: ${doc.id}`);
+                    const offerData = doc.data();
+                    const expiredOfferRef = db.collection('expired_offers_trash').doc(doc.id);
+                    
+                    batch.set(expiredOfferRef, { ...offerData, expiredAt: now, reason: 'Quantity Depleted' });
+                    batch.delete(doc.ref);
+                    movedOffersCount++;
+                }
+            });
+
+            // Esegui tutte le operazioni in un colpo solo
+            if (movedOffersCount > 0) {
+                await batch.commit();
+                console.log(`✅ Successo! Spostate ${movedOffersCount} offerte nel cestino.`);
+            } else {
+                console.log("👍 Nessuna offerta scaduta da pulire oggi.");
+            }
+
+            // Rispondi con successo
+            return res.status(200).json({ success: true, message: `Spostate ${movedOffersCount} offerte nel cestino.` });
+
+        } catch (error) {
+            console.error("❌ Errore durante la pulizia delle offerte:", error);
+            return res.status(500).json({ success: false, error: error.message });
+        }
+    }
 };
