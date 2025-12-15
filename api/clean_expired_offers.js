@@ -126,11 +126,12 @@ module.exports = async (req, res) => {
     switch (action) {
         case 'renderStorePage':
             // --- LOGICA PER SERVIRE LA PAGINA DEL NEGOZIO ---
-            res.set('Content-Type', 'text/html'); // Impostiamo l'intestazione
+            // CORREZIONE: In Vercel non si usa res.set, ma si passa direttamente in res.send o si costruisce l'oggetto di risposta.
+            // Impostiamo l'intestazione Content-Type nel secondo parametro di res.send.
 
             if (!slug) {
                 console.error("Errore: slug non specificato per l'azione renderStorePage.");
-                return res.status(404).send('<h1>404 Not Found</h1><p>Negozio non specificato nell\'URL.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>');
+                return res.status(404).send('<h1>404 Not Found</h1><p>Negozio non specificato nell\'URL.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>', { headers: { 'Content-Type': 'text/html' } });
             }
 
             try {
@@ -140,7 +141,7 @@ module.exports = async (req, res) => {
 
                 if (querySnapshot.empty) {
                     console.warn(`Venditore con slug "${slug}" non trovato.`);
-                    return res.status(404).send('<h1>404 Not Found</h1><p>Il negozio che cerchi non esiste su Civora.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>');
+                    return res.status(404).send('<h1>404 Not Found</h1><p>Il negozio che cerchi non esiste su Civora.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>', { headers: { 'Content-Type': 'text/html' } });
                 }
 
                 const vendorDoc = querySnapshot.docs[0];
@@ -176,9 +177,6 @@ module.exports = async (req, res) => {
 
                 let htmlFileName;
                 // La logica per i suffissi _mobile/_desktop o nessuna suffisso per desktop "implicito"
-                // Questa parte DEVE riflettere la struttura ESATTA dei tuoi file HTML sul Firebase Hosting.
-                // In base ai nomi che mi hai fornito (es. alimentari_detail.html per desktop, alimentari_detail_mobile.html per mobile)
-                // faremo così:
                 if (isMobileDevice) {
                     // Per mobile, cerchiamo sempre il suffisso _mobile
                     // Eccezione: per `noleggio_desktop.html` in sezione_noleggio_facile, la mobile è `noleggio_mobile.html`
@@ -209,7 +207,7 @@ module.exports = async (req, res) => {
                 const frontendBaseUrl = process.env.FRONTEND_BASE_URL;
                 if (!frontendBaseUrl) {
                     console.error("FRONTEND_BASE_URL non impostata nelle variabili d'ambiente di Vercel!");
-                    return res.status(500).send('<h1>500 Internal Server Error</h1><p>Configurazione del server non completata. Contatta l\'amministrazione.</p>');
+                    return res.status(500).send('<h1>500 Internal Server Error</h1><p>Configurazione del server non completata. Contatta l\'amministrazione.</p>', { headers: { 'Content-Type': 'text/html' } });
                 }
                 const htmlFullUrl = `${frontendBaseUrl}/${htmlFileName}`;
                 console.log(`[Vercel Function] Scarico HTML da: ${htmlFullUrl}`);
@@ -219,7 +217,7 @@ module.exports = async (req, res) => {
                     console.error(`[Vercel Function] Errore nel download del file HTML (${htmlResponse.status}): ${htmlFullUrl}`);
                     // Tentativo di fallback con la homepage di Civora per evitare pagina bianca
                     if (htmlResponse.status === 404) {
-                        return res.status(404).send(`<h1>404 Not Found</h1><p>La pagina specifica per questo negozio non è stata trovata. (${htmlFileName})</p><p>Torna alla <a href="${frontendBaseUrl}">Homepage Civora</a></p>`);
+                        return res.status(404).send(`<h1>404 Not Found</h1><p>La pagina specifica per questo negozio non è stata trovata. (${htmlFileName})</p><p>Torna alla <a href="${frontendBaseUrl}">Homepage Civora</a></p>`, { headers: { 'Content-Type': 'text/html' } });
                     }
                     throw new Error(`Impossibile scaricare il file HTML: ${htmlResponse.statusText}`);
                 }
@@ -248,11 +246,11 @@ module.exports = async (req, res) => {
                 htmlContent = htmlContent.replace('<body', `<body data-vendor-id="${vendorId}" data-vendor-color="${shopColor}"`);
 
                 // 6. Invia la pagina HTML modificata all'utente
-                return res.status(200).send(htmlContent);
+                return res.status(200).send(htmlContent, { headers: { 'Content-Type': 'text/html' } });
 
             } catch (error) {
                 console.error("[Vercel Function] Errore critico nel rendere la pagina del negozio:", error);
-                return res.status(500).send('<h1>500 Internal Server Error</h1><p>Si è verificato un problema tecnico inaspettato nel caricamento del negozio.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>');
+                return res.status(500).send('<h1>500 Internal Server Error</h1><p>Si è verificato un problema tecnico inaspettato nel caricamento del negozio.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>', { headers: { 'Content-Type': 'text/html' } });
             }
 
         case undefined: // Questa è l'azione di default, se non specificata (quindi, una richiesta cron)
@@ -332,6 +330,6 @@ module.exports = async (req, res) => {
         default:
             // Se l'azione non è riconosciuta
             console.warn(`[Vercel Function] Azione non riconosciuta: "${action}"`);
-            return res.status(400).send('<h1>400 Bad Request</h1><p>Azione Vercel Function non valida.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>');
+            return res.status(400).send('<h1>400 Bad Request</h1><p>Azione Vercel Function non valida.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>', { headers: { 'Content-Type': 'text/html' } });
     }
 };
