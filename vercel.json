@@ -22,6 +22,7 @@
     }
   ],
   "rewrites": [
+    { "source": "/negozio/:slug", "destination": "/api/clean_expired_offers.js" },
     { "source": "/api/clean_expired_offers", "destination": "/api/clean_expired_offers.js" },
     { "source": "/api/create-payment-intent", "destination": "/api/create-payment-intent.js" },
     { "source": "/api/create-stripe-account-link", "destination": "/api/create-stripe-account-link.js" },
