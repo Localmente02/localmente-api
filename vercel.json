@@ -23,6 +23,7 @@
   ],
   "rewrites": [
     { "source": "/negozio/:slug", "destination": "/api/clean_expired_offers?action=renderStorePage&slug=:slug" },
+    { "source": "/api/clean_expired_offers?action=renderStorePage&slug=:slug", "destination": "/api/clean_expired_offers.js" },
     { "source": "/api/clean_expired_offers", "destination": "/api/clean_expired_offers.js" },
     { "source": "/api/create-payment-intent", "destination": "/api/create-payment-intent.js" },
     { "source": "/api/create-stripe-account-link", "destination": "/api/create-stripe-account-link.js" },
