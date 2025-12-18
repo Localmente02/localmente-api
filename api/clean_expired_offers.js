@@ -2,13 +2,13 @@
 
 // Importa le librerie necessarie
 const admin = require('firebase-admin');
-const fetch = require('node-fetch'); // Necessario per scaricare i file HTML dal tuo frontend
-const path = require('path'); // Per gestire i percorsi dei file HTML
+const fetch = require('node-fetch'); 
+const path = require('path'); 
 
 // Variabile globale per il database di Firestore
 let db;
 
-// Inizializza Firebase Admin SDK (esattamente come nel webhook.js)
+// Inizializza Firebase Admin SDK
 if (!admin.apps.length) {
   let firebaseConfig = null;
   const firebaseServiceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
@@ -60,7 +60,7 @@ function generateVendorColors(baseColor) {
         return defaultCivoraColors;
     }
 
-    // Funzioni helper per manipolare colori esadecimali (le stesse che erano nel tuo JS client)
+    // Funzioni helper per manipolare colori esadecimali
     const hexToRgb = hex => {
         if (!hex || typeof hex !== 'string' || !hex.startsWith('#')) return { r: 0, g: 0, b: 0 };
         let r = 0, g = 0, b = 0;
@@ -80,7 +80,7 @@ function generateVendorColors(baseColor) {
         r = Math.max(0, Math.min(255, r));
         g = Math.max(0, Math.min(255, g));
         b = Math.max(0, Math.min(255, b));
-        return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).padStart(6, '0').toUpperCase(); // Aggiunto padStart per sicurezza
+        return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).padStart(6, '0').toUpperCase();
     };
 
     const adjustColorBrightness = (hex, percent) => {
@@ -115,9 +115,20 @@ function generateVendorColors(baseColor) {
 
 // Funzione principale che verrà eseguita da Vercel
 module.exports = async (req, res) => {
+    // === IMPOSTA INTESTAZIONI CORS PER CONSENTIRE RICHIESTE DAL TUO DOMINIO FRONTEND ===
+    // Questo è fondamentale per far funzionare il proxy
+    res.setHeader('Access-Control-Allow-Origin', process.env.FRONTEND_BASE_URL || '*'); // Sostituisci '*' con il tuo dominio se vuoi più sicurezza
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    // Gestione preflight CORS (richieste OPTIONS)
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+    }
+
     // === LEGGI IL PARAMETRO 'action' DALLA QUERY STRING ===
-    const action = req.query.action; // Questo sarà 'renderStorePage' se viene da /negozio/:slug
-    const slug = req.query.slug;     // Questo sarà lo slug del negozio
+    const action = req.query.action; 
+    const slug = req.query.slug;     
 
     // Aggiungi un log per debuggare l'azione ricevuta
     console.log(`[Vercel Function] Richiesta ricevuta. Action: "${action}", Slug: "${slug || 'N/A'}"`);
@@ -125,17 +136,13 @@ module.exports = async (req, res) => {
     // Usa uno switch per distinguere le azioni
     switch (action) {
         case 'renderStorePage':
-            // --- LOGICA PER SERVIRE LA PAGINA DEL NEGOZIO ---
-            // CORREZIONE: In Vercel non si usa res.set, ma si passa direttamente in res.send o si costruisce l'oggetto di risposta.
-            // Impostiamo l'intestazione Content-Type nel secondo parametro di res.send.
-
+            // --- LOGICA ESISTENTE PER SERVIRE LA PAGINA DEL NEGOZIO ---
             if (!slug) {
                 console.error("Errore: slug non specificato per l'azione renderStorePage.");
                 return res.status(404).send('<h1>404 Not Found</h1><p>Negozio non specificato nell\'URL.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>', { headers: { 'Content-Type': 'text/html' } });
             }
 
             try {
-                // 1. Trova il venditore nel database usando lo slug
                 const vendorsRef = db.collection('vendors');
                 const querySnapshot = await vendorsRef.where('slug', '==', slug).limit(1).get();
 
@@ -146,15 +153,13 @@ module.exports = async (req, res) => {
 
                 const vendorDoc = querySnapshot.docs[0];
                 const vendorData = vendorDoc.data();
-                const vendorId = vendorDoc.id; // L'ID effettivo del documento del venditore
-                const shopColor = vendorData.shopColor || '#FF6600'; // Colore di default Civora se non specificato
-                const userType = vendorData.userType || 'negoziante'; // Tipo di negoziante per scegliere la pagina giusta
+                const vendorId = vendorDoc.id; 
+                const shopColor = vendorData.shopColor || '#FF6600'; 
+                const userType = vendorData.userType || 'negoziante'; 
 
-                // 2. Determina la versione mobile o desktop della pagina HTML
                 const userAgent = req.headers['user-agent'] || '';
                 const isMobileDevice = isMobile(userAgent);
 
-                // Determina il nome base del file HTML basandoti su userType
                 let pageNameBase = 'vendor_store_detail'; 
                 switch (userType) {
                     case 'alimentari':
@@ -163,47 +168,36 @@ module.exports = async (req, res) => {
                     case 'mercato_fresco':
                         pageNameBase = 'mercato_fresco_detail';
                         break;
-                    case 'noleggio': // O il tuo tipo per noleggio
-                        pageNameBase = 'sezione_noleggio_facile/noleggio_desktop'; // Il tuo file noleggio_desktop.html è in una sottocartella
+                    case 'noleggio': 
+                        pageNameBase = 'sezione_noleggio_facile/noleggio_desktop'; 
                         break;
-                    case 'used_negoziante': // Per i negozi di usato
+                    case 'used_negoziante': 
                         pageNameBase = 'used_vendor_store_detail';
                         break;
-                    // Aggiungi altri casi per altri userType se hanno pagine di dettaglio diverse
                     default:
                         pageNameBase = 'vendor_store_detail'; 
                         break;
                 }
 
                 let htmlFileName;
-                // La logica per i suffissi _mobile/_desktop o nessuna suffisso per desktop "implicito"
                 if (isMobileDevice) {
-                    // Per mobile, cerchiamo sempre il suffisso _mobile
-                    // Eccezione: per `noleggio_desktop.html` in sezione_noleggio_facile, la mobile è `noleggio_mobile.html`
                     if (pageNameBase === 'sezione_noleggio_facile/noleggio_desktop') {
                         htmlFileName = 'sezione_noleggio_facile/noleggio_mobile.html';
                     } else {
                         htmlFileName = `${pageNameBase}_mobile.html`;
                     }
                 } else {
-                    // Per desktop, alcune pagine non hanno il suffisso _desktop (es. alimentari_detail.html)
-                    // Usiamo il nome base SENZA suffisso se non esiste _desktop (come il tuo alimentari_detail.html)
-                    // Se invece esiste una versione _desktop (come vendor_store_detail_desktop.html), usiamo quella.
-                    // Questa logica assume che il file senza suffisso sia la versione desktop per alcuni tipi.
-                    // Adattiamo la logica basandoci sulla lista dei tuoi file.
                     if (['alimentari_detail', 'mercato_fresco_detail'].includes(pageNameBase)) {
-                        htmlFileName = `${pageNameBase}.html`; // Desktop "implicito"
+                        htmlFileName = `${pageNameBase}.html`; 
                     } else if (pageNameBase === 'sezione_noleggio_facile/noleggio_desktop') {
-                        htmlFileName = 'sezione_noleggio_facile/noleggio_desktop.html'; // Percorso completo per noleggio
+                        htmlFileName = 'sezione_noleggio_facile/noleggio_desktop.html'; 
                     } else {
-                        htmlFileName = `${pageNameBase}_desktop.html`; // Desktop "esplicito"
+                        htmlFileName = `${pageNameBase}_desktop.html`; 
                     }
                 }
                 
-                // Aggiungi un log per verificare il nome del file HTML che la funzione sta cercando di scaricare
                 console.log(`[Vercel Function] Tentativo di scaricare HTML per userType "${userType}" (Dispositivo mobile: ${isMobileDevice}): ${htmlFileName}`);
 
-                // 3. Scarica il file HTML del negozio dal tuo Firebase Hosting (FRONTEND_BASE_URL)
                 const frontendBaseUrl = process.env.FRONTEND_BASE_URL;
                 if (!frontendBaseUrl) {
                     console.error("FRONTEND_BASE_URL non impostata nelle variabili d'ambiente di Vercel!");
@@ -215,7 +209,6 @@ module.exports = async (req, res) => {
                 const htmlResponse = await fetch(htmlFullUrl);
                 if (!htmlResponse.ok) {
                     console.error(`[Vercel Function] Errore nel download del file HTML (${htmlResponse.status}): ${htmlFullUrl}`);
-                    // Tentativo di fallback con la homepage di Civora per evitare pagina bianca
                     if (htmlResponse.status === 404) {
                         return res.status(404).send(`<h1>404 Not Found</h1><p>La pagina specifica per questo negozio non è stata trovata. (${htmlFileName})</p><p>Torna alla <a href="${frontendBaseUrl}">Homepage Civora</a></p>`, { headers: { 'Content-Type': 'text/html' } });
                     }
@@ -223,7 +216,6 @@ module.exports = async (req, res) => {
                 }
                 let htmlContent = await htmlResponse.text();
 
-                // 4. Prepara lo stile dinamico con i colori del negoziante
                 const vendorColors = generateVendorColors(shopColor);
                 const dynamicStyle = `
                     <style id="vendor-dynamic-styles">
@@ -232,20 +224,14 @@ module.exports = async (req, res) => {
                             --vendor-primary-light: ${vendorColors.light};
                             --vendor-primary-dark: ${vendorColors.dark};
                             --vendor-primary-gradient: ${vendorColors.gradient};
-                            --price-color: ${vendorColors.primary}; /* Adatta come desideri */
+                            --price-color: ${vendorColors.primary}; 
                         }
                     </style>
                 `;
 
-                // 5. Inietta lo stile dinamico nell'HTML e i parametri ID e COLOR
-                // Cerca il segnaposto '<!-- VENDOR_STYLE_INJECTION -->' e sostituiscilo
                 htmlContent = htmlContent.replace('<!-- VENDOR_STYLE_INJECTION -->', dynamicStyle);
-
-                // Aggiungiamo anche l'ID del venditore e il colore come data attributes al body
-                // Questo è utile per la logica JS lato client che potrebbe aver bisogno dell'ID o del colore
                 htmlContent = htmlContent.replace('<body', `<body data-vendor-id="${vendorId}" data-vendor-color="${shopColor}"`);
 
-                // 6. Invia la pagina HTML modificata all'utente
                 return res.status(200).send(htmlContent, { headers: { 'Content-Type': 'text/html' } });
 
             } catch (error) {
@@ -253,11 +239,60 @@ module.exports = async (req, res) => {
                 return res.status(500).send('<h1>500 Internal Server Error</h1><p>Si è verificato un problema tecnico inaspettato nel caricamento del negozio.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>', { headers: { 'Content-Type': 'text/html' } });
             }
 
-        case undefined: // Questa è l'azione di default, se non specificata (quindi, una richiesta cron)
+        // --- NUOVO BLOCCO PER IL PROXY CORS DEI BARCODE ---
+        case 'proxyBarcodeLookup':
+            console.log("[Vercel Function] Esecuzione azione: proxyBarcodeLookup");
+            const barcode = req.query.barcode;
+            const apiType = req.query.apiType; // 'upcitemdb' o 'upcdatabase'
+
+            if (!barcode || !apiType) {
+                console.warn("[Vercel Function] Parametri mancanti per proxyBarcodeLookup.");
+                return res.status(400).json({ error: 'Codice a barre o tipo API mancante.' });
+            }
+
+            let apiUrl;
+            let apiKey;
+
+            switch (apiType) {
+                case 'upcitemdb':
+                    // UPCitemdb non sembra richiedere una chiave API nella URL per richieste lookup,
+                    // ma è il problema CORS che dobbiamo risolvere.
+                    apiUrl = `https://api.upcitemdb.com/prod/v1/lookup?upc=${barcode}`;
+                    console.log(`[Vercel Function] Proxying UPCitemdb: ${apiUrl}`);
+                    break;
+                case 'upcdatabase':
+                    // La chiave API di upcdatabase.org viene presa dalle variabili d'ambiente di Vercel
+                    apiKey = process.env.UPCDATABASE_API_KEY;
+                    if (!apiKey) {
+                        console.error("[Vercel Function] UPCDATABASE_API_KEY non impostata come variabile d'ambiente.");
+                        return res.status(500).json({ error: 'Configurazione API chiave mancante sul server.' });
+                    }
+                    apiUrl = `https://api.upcdatabase.org/product/${barcode}?apikey=${apiKey}`;
+                    console.log(`[Vercel Function] Proxying UPCdatabase.org: ${apiUrl}`);
+                    break;
+                default:
+                    console.warn(`[Vercel Function] Tipo API non supportato per proxy: ${apiType}`);
+                    return res.status(400).json({ error: `Tipo API non supportato: ${apiType}` });
+            }
+
+            try {
+                const apiResponse = await fetch(apiUrl);
+                const data = await apiResponse.json();
+                
+                // Invia la risposta dell'API esterna direttamente al client
+                return res.status(apiResponse.status).json(data);
+
+            } catch (proxyError) {
+                console.error(`[Vercel Function] Errore durante il proxy per ${apiType}:`, proxyError);
+                return res.status(500).json({ error: `Errore durante la ricerca proxy su ${apiType}.` });
+            }
+        // --- FINE BLOCCO PROXY CORS ---
+
+
+        case undefined: 
         case null:
-        case 'cleanExpiredOffers': // Se in futuro vogliamo un'azione esplicita per la pulizia
+        case 'cleanExpiredOffers': 
             // --- LOGICA ESISTENTE PER LA PULIZIA CRON (COME PRIMA) ---
-            // Blocco di sicurezza: solo Vercel Cron può eseguire questa funzione
             const cronSecret = process.env.CRON_SECRET;
             const authHeader = req.headers['authorization'];
 
@@ -278,7 +313,6 @@ module.exports = async (req, res) => {
             const batch = db.batch();
 
             try {
-                // 1. Trova tutte le offerte la cui data di fine è passata
                 const expiredByDateQuery = db.collection('alimentari_offers').where('endDate', '<', now);
                 const expiredByDateSnapshot = await expiredByDateQuery.get();
 
@@ -287,19 +321,15 @@ module.exports = async (req, res) => {
                     const offerData = doc.data();
                     const expiredOfferRef = db.collection('expired_offers_trash').doc(doc.id);
                     
-                    // Aggiungi l'offerta al "cestino"
                     batch.set(expiredOfferRef, { ...offerData, expiredAt: now, reason: 'Date Expired' });
-                    // Elimina l'offerta dalla collezione attiva
                     batch.delete(doc.ref);
                     movedOffersCount++;
                 });
 
-                // 2. Trova tutte le offerte con quantità esaurita (quantity <= 0)
                 const expiredByQuantityQuery = db.collection('alimentari_offers').where('quantity', '<=', 0);
                 const expiredByQuantitySnapshot = await expiredByQuantityQuery.get();
                 
                 expiredByQuantitySnapshot.forEach(doc => {
-                    // Controlla se l'abbiamo già spostata per la data, per non fare doppi conteggi
                     if (!expiredByDateSnapshot.docs.some(d => d.id === doc.id)) {
                         console.log(`🗑️ Trovata offerta con quantità esaurita: ${doc.id}`);
                         const offerData = doc.data();
@@ -311,7 +341,6 @@ module.exports = async (req, res) => {
                     }
                 });
 
-                // Esegui tutte le operazioni in un colpo soloo
                 if (movedOffersCount > 0) {
                     await batch.commit();
                     console.log(`✅ Successo! Spostate ${movedOffersCount} offerte nel cestino.`);
@@ -319,7 +348,6 @@ module.exports = async (req, res) => {
                     console.log("👍 Nessuna offerta scaduta da pulire oggi.");
                 }
 
-                // Rispondi con successo
                 return res.status(200).json({ success: true, message: `Spostate ${movedOffersCount} offerte nel cestino.` });
 
             } catch (error) {
@@ -328,7 +356,6 @@ module.exports = async (req, res) => {
             }
 
         default:
-            // Se l'azione non è riconosciuta
             console.warn(`[Vercel Function] Azione non riconosciuta: "${action}"`);
             return res.status(400).send('<h1>400 Bad Request</h1><p>Azione Vercel Function non valida.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>', { headers: { 'Content-Type': 'text/html' } });
     }
