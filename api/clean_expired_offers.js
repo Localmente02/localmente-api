@@ -115,11 +115,28 @@ function generateVendorColors(baseColor) {
 
 // Funzione principale che verrà eseguita da Vercel
 module.exports = async (req, res) => {
-    // === IMPOSTA INTESTAZIONI CORS PER CONSENTIRE RICHIESTE DAL TUO DOMINIO FRONTEND ===
-    // Questo è fondamentale per far funzionare il proxy
-    res.setHeader('Access-Control-Allow-Origin', process.env.FRONTEND_BASE_URL || '*'); // Sostituisci '*' con il tuo dominio se vuoi più sicurezza
+    // === IMPOSTAZIONI CORS AVANZATE ===
+    const allowedOrigins = [
+        process.env.FRONTEND_BASE_URL,
+        process.env.DASHBOARD_BASE_URL
+    ].filter(Boolean); // Filtra eventuali valori null/undefined
+
+    const origin = req.headers.origin;
+    if (allowedOrigins.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+    } else if (process.env.NODE_ENV !== 'production') {
+        // In sviluppo, potresti voler consentire '*' per comodità.
+        // MA MAI in produzione senza una lista di origini precise.
+        // Per ora, lo lasciamo specifico per non causare problemi imprevisti.
+        // Se hai un ambiente di sviluppo locale, potresti aggiungere 'http://localhost:port' qui.
+        console.warn(`[Vercel Function] Richiesta da origine non consentita in produzione: ${origin}`);
+        // Se non è un'origine consentita, non impostiamo l'header, lasciando che il browser blocchi.
+    }
+
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    // Aggiungi qui altre intestazioni se il tuo frontend o le API esterne le usano
+    // es. res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     // Gestione preflight CORS (richieste OPTIONS)
     if (req.method === 'OPTIONS') {
@@ -131,7 +148,7 @@ module.exports = async (req, res) => {
     const slug = req.query.slug;     
 
     // Aggiungi un log per debuggare l'azione ricevuta
-    console.log(`[Vercel Function] Richiesta ricevuta. Action: "${action}", Slug: "${slug || 'N/A'}"`);
+    console.log(`[Vercel Function] Richiesta ricevuta. Action: "${action}", Origin: "${origin || 'N/A'}", Slug: "${slug || 'N/A'}"`);
 
     // Usa uno switch per distinguere le azioni
     switch (action) {
@@ -198,7 +215,7 @@ module.exports = async (req, res) => {
                 
                 console.log(`[Vercel Function] Tentativo di scaricare HTML per userType "${userType}" (Dispositivo mobile: ${isMobileDevice}): ${htmlFileName}`);
 
-                const frontendBaseUrl = process.env.FRONTEND_BASE_URL;
+                const frontendBaseUrl = process.env.FRONTEND_BASE_URL; // Questo è il tuo www.civora.it
                 if (!frontendBaseUrl) {
                     console.error("FRONTEND_BASE_URL non impostata nelle variabili d'ambiente di Vercel!");
                     return res.status(500).send('<h1>500 Internal Server Error</h1><p>Configurazione del server non completata. Contatta l\'amministrazione.</p>', { headers: { 'Content-Type': 'text/html' } });
@@ -239,11 +256,10 @@ module.exports = async (req, res) => {
                 return res.status(500).send('<h1>500 Internal Server Error</h1><p>Si è verificato un problema tecnico inaspettato nel caricamento del negozio.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>', { headers: { 'Content-Type': 'text/html' } });
             }
 
-        // --- NUOVO BLOCCO PER IL PROXY CORS DEI BARCODE ---
         case 'proxyBarcodeLookup':
             console.log("[Vercel Function] Esecuzione azione: proxyBarcodeLookup");
             const barcode = req.query.barcode;
-            const apiType = req.query.apiType; // 'upcitemdb' o 'upcdatabase'
+            const apiType = req.query.apiType; 
 
             if (!barcode || !apiType) {
                 console.warn("[Vercel Function] Parametri mancanti per proxyBarcodeLookup.");
@@ -255,13 +271,10 @@ module.exports = async (req, res) => {
 
             switch (apiType) {
                 case 'upcitemdb':
-                    // UPCitemdb non sembra richiedere una chiave API nella URL per richieste lookup,
-                    // ma è il problema CORS che dobbiamo risolvere.
                     apiUrl = `https://api.upcitemdb.com/prod/v1/lookup?upc=${barcode}`;
                     console.log(`[Vercel Function] Proxying UPCitemdb: ${apiUrl}`);
                     break;
                 case 'upcdatabase':
-                    // La chiave API di upcdatabase.org viene presa dalle variabili d'ambiente di Vercel
                     apiKey = process.env.UPCDATABASE_API_KEY;
                     if (!apiKey) {
                         console.error("[Vercel Function] UPCDATABASE_API_KEY non impostata come variabile d'ambiente.");
@@ -279,20 +292,17 @@ module.exports = async (req, res) => {
                 const apiResponse = await fetch(apiUrl);
                 const data = await apiResponse.json();
                 
-                // Invia la risposta dell'API esterna direttamente al client
                 return res.status(apiResponse.status).json(data);
 
             } catch (proxyError) {
                 console.error(`[Vercel Function] Errore durante il proxy per ${apiType}:`, proxyError);
                 return res.status(500).json({ error: `Errore durante la ricerca proxy su ${apiType}.` });
             }
-        // --- FINE BLOCCO PROXY CORS ---
-
 
         case undefined: 
         case null:
         case 'cleanExpiredOffers': 
-            // --- LOGICA ESISTENTE PER LA PULIZIA CRON (COME PRIMA) ---
+            // --- LOGICA ESISTENTE PER LA PULIZIA CRON ---
             const cronSecret = process.env.CRON_SECRET;
             const authHeader = req.headers['authorization'];
 
