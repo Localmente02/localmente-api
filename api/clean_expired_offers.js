@@ -1,4 +1,4 @@
-// api/clean_expired_offers.js
+// api/clean_expired_expired_offers.js
 
 // Importa le librerie necessarie
 const admin = require('firebase-admin');
@@ -125,18 +125,12 @@ module.exports = async (req, res) => {
     if (allowedOrigins.includes(origin)) {
         res.setHeader('Access-Control-Allow-Origin', origin);
     } else if (process.env.NODE_ENV !== 'production') {
-        // In sviluppo, potresti voler consentire '*' per comodità.
-        // MA MAI in produzione senza una lista di origini precise.
-        // Per ora, lo lasciamo specifico per non causare problemi imprevisti.
-        // Se hai un ambiente di sviluppo locale, potresti aggiungere 'http://localhost:port' qui.
         console.warn(`[Vercel Function] Richiesta da origine non consentita in produzione: ${origin}`);
-        // Se non è un'origine consentita, non impostiamo l'header, lasciando che il browser blocchi.
     }
 
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    // Aggiungi qui altre intestazioni se il tuo frontend o le API esterne le usano
-    // es. res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type'); // Rimosso 'User-Key' qui, gestito in fetch per upcdatabase.org
+    // Se avremo bisogno di altre intestazioni personalizzate per altre API in futuro, le aggiungeremo qui.
 
     // Gestione preflight CORS (richieste OPTIONS)
     if (req.method === 'OPTIONS') {
@@ -147,13 +141,10 @@ module.exports = async (req, res) => {
     const action = req.query.action; 
     const slug = req.query.slug;     
 
-    // Aggiungi un log per debuggare l'azione ricevuta
     console.log(`[Vercel Function] Richiesta ricevuta. Action: "${action}", Origin: "${origin || 'N/A'}", Slug: "${slug || 'N/A'}"`);
 
-    // Usa uno switch per distinguere le azioni
     switch (action) {
         case 'renderStorePage':
-            // --- LOGICA ESISTENTE PER SERVIRE LA PAGINA DEL NEGOZIO ---
             if (!slug) {
                 console.error("Errore: slug non specificato per l'azione renderStorePage.");
                 return res.status(404).send('<h1>404 Not Found</h1><p>Negozio non specificato nell\'URL.</p><p>Torna alla <a href="https://www.civora.it">Homepage Civora</a></p>', { headers: { 'Content-Type': 'text/html' } });
@@ -215,7 +206,7 @@ module.exports = async (req, res) => {
                 
                 console.log(`[Vercel Function] Tentativo di scaricare HTML per userType "${userType}" (Dispositivo mobile: ${isMobileDevice}): ${htmlFileName}`);
 
-                const frontendBaseUrl = process.env.FRONTEND_BASE_URL; // Questo è il tuo www.civora.it
+                const frontendBaseUrl = process.env.FRONTEND_BASE_URL; 
                 if (!frontendBaseUrl) {
                     console.error("FRONTEND_BASE_URL non impostata nelle variabili d'ambiente di Vercel!");
                     return res.status(500).send('<h1>500 Internal Server Error</h1><p>Configurazione del server non completata. Contatta l\'amministrazione.</p>', { headers: { 'Content-Type': 'text/html' } });
@@ -267,20 +258,22 @@ module.exports = async (req, res) => {
             }
 
             let apiUrl;
-            let apiKey;
+            const fetchOptions = {}; // Usiamo un oggetto per passare le opzioni a fetch
 
             switch (apiType) {
                 case 'upcitemdb':
+                    // Come da documentazione "Free" e "No Sign up required"
                     apiUrl = `https://api.upcitemdb.com/prod/v1/lookup?upc=${barcode}`;
-                    console.log(`[Vercel Function] Proxying UPCitemdb: ${apiUrl}`);
+                    // Non inviamo alcuna User-Key header come da tua osservazione
+                    console.log(`[Vercel Function] Proxying UPCitemdb (Free access): ${apiUrl}`);
                     break;
                 case 'upcdatabase':
-                    apiKey = process.env.UPCDATABASE_API_KEY;
-                    if (!apiKey) {
+                    const upcdatabaseApiKey = process.env.UPCDATABASE_API_KEY;
+                    if (!upcdatabaseApiKey) {
                         console.error("[Vercel Function] UPCDATABASE_API_KEY non impostata come variabile d'ambiente.");
-                        return res.status(500).json({ error: 'Configurazione API chiave mancante sul server.' });
+                        return res.status(500).json({ error: 'Configurazione API chiave upcdatabase.org mancante sul server.' });
                     }
-                    apiUrl = `https://api.upcdatabase.org/product/${barcode}?apikey=${apiKey}`;
+                    apiUrl = `https://api.upcdatabase.org/product/${barcode}?apikey=${upcdatabaseApiKey}`;
                     console.log(`[Vercel Function] Proxying UPCdatabase.org: ${apiUrl}`);
                     break;
                 default:
@@ -289,7 +282,7 @@ module.exports = async (req, res) => {
             }
 
             try {
-                const apiResponse = await fetch(apiUrl);
+                const apiResponse = await fetch(apiUrl, fetchOptions); // Passa le opzioni, che saranno vuote per upcitemdb
                 const data = await apiResponse.json();
                 
                 return res.status(apiResponse.status).json(data);
@@ -302,7 +295,6 @@ module.exports = async (req, res) => {
         case undefined: 
         case null:
         case 'cleanExpiredOffers': 
-            // --- LOGICA ESISTENTE PER LA PULIZIA CRON ---
             const cronSecret = process.env.CRON_SECRET;
             const authHeader = req.headers['authorization'];
 
