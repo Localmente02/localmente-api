@@ -1,5 +1,4 @@
-// api/clean_expired_offers.js (MODIFICATO)
-
+// api/clean_expired_offers.js 
 // Importa le librerie necessarie
 const admin = require('firebase-admin');
 const fetch = require('node-fetch'); 
