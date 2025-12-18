@@ -1,4 +1,4 @@
-// api/clean_expired_expired_offers.js
+// api/clean_expired_offers.js (MODIFICATO)
 
 // Importa le librerie necessarie
 const admin = require('firebase-admin');
@@ -78,7 +78,7 @@ function generateVendorColors(baseColor) {
 
     const rgbToHex = (r, g, b) => {
         r = Math.max(0, Math.min(255, r));
-        g = Math.max(0, Math.min(255, g));
+        g = Math.max(0, Math.min(255, b));
         b = Math.max(0, Math.min(255, b));
         return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).padStart(6, '0').toUpperCase();
     };
@@ -129,9 +129,8 @@ module.exports = async (req, res) => {
     }
 
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type'); // Rimosso 'User-Key' qui, gestito in fetch per upcdatabase.org
-    // Se avremo bisogno di altre intestazioni personalizzate per altre API in futuro, le aggiungeremo qui.
-
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    
     // Gestione preflight CORS (richieste OPTIONS)
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
@@ -258,13 +257,12 @@ module.exports = async (req, res) => {
             }
 
             let apiUrl;
-            const fetchOptions = {}; // Usiamo un oggetto per passare le opzioni a fetch
+            const fetchOptions = {}; 
 
             switch (apiType) {
                 case 'upcitemdb':
-                    // Come da documentazione "Free" e "No Sign up required"
+                    // RIMOSSA LA LOGICA CHIAVE API PER UPCITEMDB - USARE ACCESSO FREE
                     apiUrl = `https://api.upcitemdb.com/prod/v1/lookup?upc=${barcode}`;
-                    // Non inviamo alcuna User-Key header come da tua osservazione
                     console.log(`[Vercel Function] Proxying UPCitemdb (Free access): ${apiUrl}`);
                     break;
                 case 'upcdatabase':
@@ -282,7 +280,7 @@ module.exports = async (req, res) => {
             }
 
             try {
-                const apiResponse = await fetch(apiUrl, fetchOptions); // Passa le opzioni, che saranno vuote per upcitemdb
+                const apiResponse = await fetch(apiUrl, fetchOptions); 
                 const data = await apiResponse.json();
                 
                 return res.status(apiResponse.status).json(data);
