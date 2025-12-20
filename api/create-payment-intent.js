@@ -152,19 +152,18 @@ module.exports = async (req, res) => {
 // 5. LOGICA: CALCULATE_AND_PAY (IL BUNKER)
 // ==================================================================
 async function handleCalculateAndPay(req, res) {
-    const { cartItems, isGuest, guestData, clientClaimedTotal, tempGuestCartRef, vendorId, customerUserId, deliveryMethod, selectedAddress } = req.body; // Aggiunto deliveryMethod e selectedAddress
+    const { cartItems, isGuest, guestData, clientClaimedTotal, tempGuestCartRef, vendorId, customerUserId, deliveryMethod, selectedAddress } = req.body;
 
     console.log(`🔒 Bunker avviato. Guest: ${isGuest}, Vendor: ${vendorId}, User: ${customerUserId}`);
-    console.log(`DEBUG_BACKEND: Richiesta CALCULATE_AND_PAY - Payload: ${JSON.stringify(req.body)}`); // 🔥 NUOVO: Logga l'intero payload
+    console.log(`DEBUG_BACKEND: Richiesta CALCULATE_AND_PAY - Payload: ${JSON.stringify(req.body)}`); // 🔥 Logga l'intero payload
 
-    // 🔥 NUOVO: Determina la collezione corretta per il carrello temporaneo
     const tempCartCollectionName = isGuest ? 'temp_guest_carts' : 'temp_carts';
 
 
     // 1. Configurazione Globale (Fee e Spedizioni)
     const settingsDoc = await db.collection('app_settings').doc('main_config').get();
     const settings = settingsDoc.data() || {};
-    console.log("DEBUG_BACKEND: _appSettings caricate da Firebase (backend):", settings); // 🔥 NUOVO: Logga le impostazioni lette dal backend
+    console.log("DEBUG_BACKEND: _appSettings caricate da Firebase (backend):", settings);
     
     // Tariffe per gli ospiti (fallback se non presenti)
     const GUEST_SHIPPING_FEE = settings.guest_shipping_fee_single_vendor || 3.99;
@@ -172,26 +171,23 @@ async function handleCalculateAndPay(req, res) {
 
     // Tariffe per utenti registrati (fallback se non presenti)
     const AUTH_SHIPPING_FEE = settings.shipping_fee_single_vendor || 3.99;
-    // 🔥 MODIFICATO: Leggi il valore dinamico per gli utenti registrati
     const AUTH_SERVICE_FEE_PERCENTAGE = (typeof settings.service_fee_percentage_single_vendor === 'number')
         ? settings.service_fee_percentage_single_vendor
-        : 0.125; // Frontend fallback 12.5%
+        : 0.125;
 
 
     let serverGoodsTotal = 0;
     let validatedItems = [];
-    let primaryVendorId = null; // Per identificare se è un ordine da un singolo venditore
+    let primaryVendorId = null;
 
     // 2. Calcolo Reale dei Prezzi e Validazione Articoli
     for (const item of cartItems) {
-        // Determina collezione basandosi sul 'type' dell'item
-        const collectionName = item.type === 'alimentari' ? 'alimentari_products' : 'offers'; // Assumo 'offers' come default generico
+        const collectionName = item.type === 'alimentari' ? 'alimentari_products' : 'offers';
         const docRef = db.collection(collectionName).doc(item.docId || item.id);
         const docSnap = await docRef.get();
 
         if (!docSnap.exists) {
             console.warn(`Articolo non trovato nel DB: ${item.docId || item.id} nella collezione ${collectionName}. Saltato.`);
-            // Potresti voler lanciare un errore qui se l'articolo è obbligatorio
             continue; 
         }
 
@@ -201,36 +197,32 @@ async function handleCalculateAndPay(req, res) {
 
         serverGoodsTotal += realPrice * qty;
         
-        // Traccia venditore per capire se è monomandatario o marketplace
         if (!primaryVendorId) primaryVendorId = data.vendorId;
-        else if (primaryVendorId !== data.vendorId) primaryVendorId = 'MARKETPLACE_MIX'; // Segna come mix se i venditori sono diversi
+        else if (primaryVendorId !== data.vendorId) primaryVendorId = 'MARKETPLACE_MIX';
 
-        // Aggiungi al validatedItems solo i dati sicuri e arricchiti dal server
         validatedItems.push({ 
             ...item, 
-            docId: item.docId || item.id, // Assicura che docId sia sempre presente
-            productName: data.productName, // Aggiungi nome e altre info utili
+            docId: item.docId || item.id,
+            productName: data.productName,
             imageUrl: data.primaryImageUrl || data.productImageUrl || '/assets/placeholder_fallback_image.png',
-            price: realPrice, // Prezzo reale dal database
-            vendorId: data.vendorId, // Vendor ID reale dal database
-            vendorStoreName: data.store_name || 'Sconosciuto', // Nome del negozio dal documento vendor (se disponibile, altrimenti default)
-            options: item.options || {}, // Mantieni le opzioni se presenti
-            type: item.type // Tipo di collezione
+            price: realPrice,
+            vendorId: data.vendorId,
+            vendorStoreName: data.store_name || 'Sconosciuto',
+            options: item.options || {},
+            type: item.type
         });
     }
     serverGoodsTotal = parseFloat(serverGoodsTotal.toFixed(2));
 
 
     // 3. Calcolo Spedizione (logica dettagliata)
-    let serverShipping = isGuest ? GUEST_SHIPPING_FEE : AUTH_SHIPPING_FEE; // Prendi il costo base in base al tipo di utente
+    let serverShipping = isGuest ? GUEST_SHIPPING_FEE : AUTH_SHIPPING_FEE;
     let isShippingFree = false;
 
-    // Se il deliveryMethod è pickup, la spedizione è gratuita indipendentemente da altro
     if (deliveryMethod === 'pickup') {
         serverShipping = 0;
         isShippingFree = true;
-    } else { // Se deliveryMethod è 'delivery', applica le regole di spedizione
-        // Recupera i dati completi del venditore per le regole di spedizione gratuita
+    } else {
         const vendorDoc = await db.collection('vendors').doc(vendorId).get();
         const currentVendorFullData = vendorDoc.exists ? vendorDoc.data() : {};
 
@@ -262,54 +254,51 @@ async function handleCalculateAndPay(req, res) {
         }
     }
     serverShipping = parseFloat(serverShipping.toFixed(2));
-    console.log(`DEBUG_BACKEND: Spedizione calcolata: ${serverShipping}, Gratuita: ${isShippingFree}, Metodo: ${deliveryMethod}`); // 🔥 NUOVO LOG
+    console.log(`DEBUG_BACKEND: Spedizione calcolata: ${serverShipping}, Gratuita: ${isShippingFree}, Metodo: ${deliveryMethod}`);
 
 
     // 4. Calcolo Service Fee
     let serviceFeePercentage = isGuest ? GUEST_SERVICE_FEE_PERCENTAGE : AUTH_SERVICE_FEE_PERCENTAGE;
-    // Qui andrebbero applicati gli override per brand/vendorType se ne avessimo anche per gli ospiti o volessimo estenderli.
-    // Per ora, solo la percentuale base in base a isGuest.
     let serverFee = serverGoodsTotal * serviceFeePercentage;
     serverFee = parseFloat(serverFee.toFixed(2));
-    console.log(`DEBUG_BACKEND: Percentuale commissione usata: ${serviceFeePercentage}, Commissione calcolata: ${serverFee}`); // 🔥 NUOVO LOG
+    console.log(`DEBUG_BACKEND: Percentuale commissione usata: ${serviceFeePercentage}, Commissione calcolata: ${serverFee}`);
 
     const serverGrandTotal = parseFloat((serverGoodsTotal + serverShipping + serverFee).toFixed(2));
-    console.log(`DEBUG_BACKEND: Totali finali server - Subtotal: ${serverGoodsTotal}, Shipping: ${serverShipping}, Service Fee: ${serverFee}, Total: ${serverGrandTotal}`); // 🔥 NUOVO LOG
+    console.log(`DEBUG_BACKEND: Totali finali server - Subtotal: ${serverGoodsTotal}, Shipping: ${serverShipping}, Service Fee: ${serverFee}, Total: ${serverGrandTotal}`);
 
 
     // 5. Aggiorna il carrello temporaneo con i totali calcolati in modo sicuro
-    if (tempGuestCartRef) { // tempGuestCartRef ora può essere l'ID di temp_carts o temp_guest_carts
+    if (tempGuestCartRef) {
         const tempCartRef = db.collection(tempCartCollectionName).doc(tempGuestCartRef);
         await tempCartRef.update({
-            items: validatedItems, // Salva gli articoli validati e arricchiti
+            items: validatedItems,
             subtotal: serverGoodsTotal,
             shippingCost: serverShipping,
             serviceFee: serverFee,
             totalPrice: serverGrandTotal,
             isShippingFree: isShippingFree,
-            deliveryMethod: deliveryMethod, // Salva il metodo di consegna
-            selectedAddress: selectedAddress, // Salva l'indirizzo selezionato
+            deliveryMethod: deliveryMethod || null, // 🔥 FIX: Converti undefined a null
+            selectedAddress: selectedAddress || null, // 🔥 FIX: Converti undefined a null
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            customerUserId: customerUserId || null, // Aggiunto user ID per temp_carts
+            customerUserId: customerUserId || null,
         });
         console.log(`✅ Carrello temporaneo ${tempCartCollectionName}/${tempGuestCartRef} aggiornato con totali sicuri.`);
     }
 
 
     // 6. WATCHDOG (Sicurezza) - Confronta il totale calcolato dal client con quello del server
-    // solo se il client ha fornito un claimedTotal maggiore di 0 per evitare errori con 0-value
-    if (clientClaimedTotal !== undefined && clientClaimedTotal > 0) { // clientClaimedTotal è in centesimi
-        const diff = Math.abs(serverGrandTotal * 100 - clientClaimedTotal); // Confronta in centesimi
-        if (diff > 100) { // Tolleranza di 1 euro (100 centesimi)
+    if (clientClaimedTotal !== undefined && clientClaimedTotal > 0) {
+        const diff = Math.abs(serverGrandTotal * 100 - clientClaimedTotal);
+        if (diff > 100) {
             console.warn(`🚨 HACK ATTEMPT? Client claimed: ${clientClaimedTotal/100} vs Server calculated: ${serverGrandTotal}`);
             await db.collection('_security_audits').add({
                 type: 'PRICE_TAMPERING',
                 email: (isGuest ? guestData?.email : customerUserId) || 'unknown',
-                diff: diff / 100, // Logga la differenza in euro
+                diff: diff / 100,
                 claimedTotal: clientClaimedTotal / 100,
                 serverTotal: serverGrandTotal,
                 timestamp: admin.firestore.FieldValue.serverTimestamp(),
-                cartItems: cartItems // Include il carrello per debug
+                cartItems: cartItems
             });
             throw new Error("Discrepanza nei prezzi rilevata. Aggiorna il carrello e riprova.");
         }
@@ -319,8 +308,7 @@ async function handleCalculateAndPay(req, res) {
     // 7. Crea Payment Intent di Stripe
     const amountInt = Math.round(serverGrandTotal * 100);
     
-    // Per gli ordini, prendiamo l'ID del venditore dalla richiesta.
-    const vendorDataSnap = await db.collection('vendors').doc(vendorId).get(); // Recupera i dati del venditore per stripeAccountId
+    const vendorDataSnap = await db.collection('vendors').doc(vendorId).get();
     if (!vendorDataSnap.exists) {
         throw new Error("Dati del venditore non trovati per Stripe Account ID.");
     }
@@ -336,22 +324,18 @@ async function handleCalculateAndPay(req, res) {
         shippingCost: serverShipping.toString(),
         subTotal: serverGoodsTotal.toString(),
         totalPrice: serverGrandTotal.toString(),
-        vendorId: vendorId, // ID del singolo venditore
-        tempCartRefId: tempGuestCartRef, // 🔥 NUOVO: Riferimento al carrello temporaneo (generico)
-        tempCartCollection: tempCartCollectionName, // 🔥 NUOVO: Nome della collezione del carrello temporaneo
+        vendorId: vendorId,
+        tempCartRefId: tempGuestCartRef,
+        tempCartCollection: tempCartCollectionName,
     };
     
-    // Aggiungi dati ospite/cliente per finalizzare (se non già nel tempCart)
     if (isGuest && guestData) {
         if(guestData.name) metadata.guestName = guestData.name;
         if(guestData.surname) metadata.guestSurname = guestData.surname;
         if(guestData.phone) metadata.guestPhone = guestData.phone;
         if(guestData.email) metadata.guestEmail = guestData.email;
-        // ... (altri campi di guestData)
     } else if (!isGuest && customerUserId) {
         metadata.customerUserId = customerUserId;
-        // Se non è guest, i dati del cliente verranno recuperati dal suo profilo Firestore
-        // o dall'oggetto customerShippingData passato nella FINALIZE_ORDER
     }
 
 
@@ -359,8 +343,7 @@ async function handleCalculateAndPay(req, res) {
         amount: amountInt,
         currency: 'eur',
         automatic_payment_methods: { enabled: true },
-        // Per Stripe Connect, specificare application_fee_amount e destination
-        application_fee_amount: Math.round(serverFee * 100), // Commissione di Civora in centesimi
+        application_fee_amount: Math.round(serverFee * 100),
         transfer_data: {
             destination: vendorStripeAccountId,
         },
@@ -382,32 +365,23 @@ async function handleCalculateAndPay(req, res) {
 // 6. LOGICA: FINALIZE_ORDER (Ex finalize-guest-order)
 // ==================================================================
 async function handleFinalizeOrder(req, res) {
-    const { paymentIntentId, guestData, tempGuestCartRef, vendorId, paymentMethod, customerUserId, customerShippingData, deliveryMethod, orderNotes, isMercatoFresco } = req.body; // Aggiunti customerUserId, customerShippingData, deliveryMethod, orderNotes, isMercatoFresco
+    const { paymentIntentId, guestData, tempGuestCartRef, vendorId, paymentMethod, customerUserId, customerShippingData, deliveryMethod, orderNotes, isMercatoFresco } = req.body;
     
-    console.log(`DEBUG_BACKEND: Richiesta FINALIZE_ORDER - Payload: ${JSON.stringify(req.body)}`); // 🔥 NUOVO: Logga l'intero payload
+    console.log(`DEBUG_BACKEND: Richiesta FINALIZE_ORDER - Payload: ${JSON.stringify(req.body)}`);
 
     if (!paymentIntentId && paymentMethod !== 'FREE_ORDER' && !paymentMethod.startsWith('onDelivery')) throw new Error("PaymentIntentId mancante per pagamento con carta.");
     if (!tempGuestCartRef) throw new Error("Riferimento carrello temporaneo mancante.");
-    // vendorId potrebbe essere null per ordini marketplace multi-vendor, ma per gli ordini singleVendor deve esserci
-    if (!vendorId && !isMercatoFresco && new Set(itemsToOrder.map(item => item.vendorId)).size === 1) {
-        // Questa condizione può essere problematico se itemsToOrder non è definito a questo punto.
-        // È meglio recuperare itemsToOrder prima per la validazione.
-        // Per ora, non la modifichiamo ma ne teniamo conto.
-    }
+    
+    const isGuestOrder = !!guestData;
+    const currentUserId = customerUserId || null;
 
-    // Determine if it's a guest or registered user order
-    const isGuestOrder = !!guestData; // Se guestData è presente, è un ordine ospite
-    const currentUserId = customerUserId || null; // Per utenti registrati
-
-    // 🔥 NUOVO: Determina la collezione corretta per il carrello temporaneo (usa il metadata se presente, altrimenti inferisce)
     let tempCartCollectionName = isGuestOrder ? 'temp_guest_carts' : 'temp_carts';
-    // Se il paymentIntentId non è 'FREE_ORDER', possiamo recuperare il metadata da Stripe
     if (paymentIntentId && paymentIntentId !== 'FREE_ORDER') {
         try {
             const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
             if (pi.metadata?.tempCartCollection) {
                 tempCartCollectionName = pi.metadata.tempCartCollection;
-                console.log(`DEBUG_BACKEND: Sovrascritto tempCartCollectionName da PI metadata: ${tempCartCollectionName}`); // 🔥 NUOVO LOG
+                console.log(`DEBUG_BACKEND: Sovrascritto tempCartCollectionName da PI metadata: ${tempCartCollectionName}`);
             }
         } catch (error) {
             console.warn(`AVVISO: Impossibile recuperare metadata per PaymentIntent ${paymentIntentId}. Usando collezione inferita.`);
@@ -415,20 +389,17 @@ async function handleFinalizeOrder(req, res) {
     }
 
 
-    // 1. Recupera da Stripe (se non è un ordine FREE_ORDER)
     if (paymentIntentId !== 'FREE_ORDER') {
         const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
         if (pi.status !== 'succeeded') throw new Error(`Pagamento non riuscito: ${pi.status}. Stato attuale: ${pi.status}`);
     }
 
-    // Controllo Idempotenza per evitare duplicati
     const exist = await db.collection('orders').where('paymentIntentId', '==', paymentIntentId).limit(1).get();
     if (!exist.empty) {
         console.warn(`Ordine per PaymentIntentId ${paymentIntentId} già esistente: ${exist.docs[0].id}. Ignoro finalizzazione duplicata.`);
         return res.status(200).json({ orderId: exist.docs[0].id, message: 'Ordine già esistente' });
     }
 
-    // 2. Recupera Articoli e totali calcolati in modo sicuro dal temp_carts o temp_guest_carts
     const cartDocRef = db.collection(tempCartCollectionName).doc(tempGuestCartRef);
     const cartDoc = await cartDocRef.get();
 
@@ -437,7 +408,7 @@ async function handleFinalizeOrder(req, res) {
         throw new Error('Carrello temporaneo non trovato o scaduto per la finalizzazione.');
     }
     const tempCartData = cartDoc.data();
-    console.log(`DEBUG_BACKEND: Dati carrello temporaneo (${tempCartCollectionName}/${tempGuestCartRef}) per finalizzazione: ${JSON.stringify(tempCartData)}`); // 🔥 NUOVO LOG
+    console.log(`DEBUG_BACKEND: Dati carrello temporaneo (${tempCartCollectionName}/${tempGuestCartRef}) per finalizzazione: ${JSON.stringify(tempCartData)}`);
 
     const itemsToOrder = tempCartData.items;
     const subtotal = tempCartData.subtotal;
@@ -445,8 +416,8 @@ async function handleFinalizeOrder(req, res) {
     const serviceFee = tempCartData.serviceFee;
     const totalPrice = tempCartData.totalPrice;
     const isShippingFree = tempCartData.isShippingFree;
-    const orderDeliveryMethod = tempCartData.deliveryMethod || deliveryMethod || 'delivery'; // Precedenza a tempCart, poi body, poi default
-    const selectedAddressData = tempCartData.selectedAddress || customerShippingData || {}; // Indirizzo salvato nel temp cart o passato
+    const orderDeliveryMethod = tempCartData.deliveryMethod || deliveryMethod || 'delivery';
+    const selectedAddressData = tempCartData.selectedAddress || customerShippingData || {};
 
 
     if (!itemsToOrder || itemsToOrder.length === 0) {
@@ -454,39 +425,35 @@ async function handleFinalizeOrder(req, res) {
         throw new Error("Carrello vuoto o scaduto.");
     }
 
-    // 3. Recupera i dati completi del venditore per l'indirizzo di pickup e il userType
-    // Se è un ordine marketplace, potremmo dover recuperare più venditori.
     const vendorIdsFromItems = [...new Set(itemsToOrder.map(item => item.vendorId))];
-    const firstVendorId = vendorIdsFromItems[0]; // Per gli ordini single-vendor
+    const firstVendorId = vendorIdsFromItems[0];
     
-    // Recupera i dati del venditore principale se è un ordine single-vendor.
-    // Per marketplace consolidato, la logica è più complessa e non abbiamo un "mainVendorData"
+    // Recupera i dati del venditore principale. Se `vendorId` è passato nel body (per singleVendor), usalo.
+    // Altrimenti, usa il primo `vendorId` dal carrello per recuperare i dati.
     let currentVendorFullData = {};
-    if (firstVendorId) { // Assicurati che esista un vendorId valido
-        const vendorDoc = await db.collection('vendors').doc(firstVendorId).get();
+    const finalVendorIdForData = vendorId || firstVendorId; // Priorità al vendorId dal body
+    
+    if (finalVendorIdForData) {
+        const vendorDoc = await db.collection('vendors').doc(finalVendorIdForData).get();
         if (!vendorDoc.exists) {
-            console.error(`Vendor ${firstVendorId} not found during order finalization.`);
+            console.error(`Vendor ${finalVendorIdForData} not found during order finalization.`);
             throw new Error('Dettagli del negoziante non trovati per la finalizzazione.');
         }
         currentVendorFullData = vendorDoc.data();
     }
-    console.log(`DEBUG_BACKEND: Dati venditore principale per finalizzazione: ${JSON.stringify(currentVendorFullData)}`); // 🔥 NUOVO LOG
+    console.log(`DEBUG_BACKEND: Dati venditore principale per finalizzazione: ${JSON.stringify(currentVendorFullData)}`);
 
 
-    // --- STRUTTURA DATI FINALI ORDINE ---
-
-    // 1. Priorità e Tipo dell'Ordine (EXPRESS o CONSOLIDATO)
     const orderPriority = (vendorIdsFromItems.length === 1 && !isMercatoFresco) ? 'EXPRESS' : 'CONSOLIDATO';
     const orderType = (vendorIdsFromItems.length === 1 && !isMercatoFresco) ? 'singleVendorExpress' : 'marketplaceConsolidated';
     const vendorIdsInvolved = vendorIdsFromItems;
 
-    // 2. Struttura dell'indirizzo di spedizione (condizionale per pickup)
     let shippingAddress = null;
     if (orderDeliveryMethod === 'delivery' && selectedAddressData) {
          shippingAddress = {
             street: selectedAddressData.street,
             city: selectedAddressData.city,
-            zipCode: selectedAddressData.cap || selectedAddressData.zipCode, // dashboard cerca zipCode o zip
+            zipCode: selectedAddressData.cap || selectedAddressData.zipCode,
             province: selectedAddressData.province,
             country: selectedAddressData.country || 'IT',
             name: selectedAddressData.name,
@@ -496,14 +463,14 @@ async function handleFinalizeOrder(req, res) {
             floor: selectedAddressData.floor,
             hasDog: selectedAddressData.hasDog,
             noBell: selectedAddressData.noBell,
-            deliveryNotes: orderNotes || selectedAddressData.deliveryNotesForAddress || '', // Note globali o dell'indirizzo
+            deliveryNotes: orderNotes || selectedAddressData.deliveryNotesForAddress || '',
         };
     }
-    console.log(`DEBUG_BACKEND: Indirizzo di spedizione strutturato: ${JSON.stringify(shippingAddress)}`); // 🔥 NUOVO LOG
+    console.log(`DEBUG_BACKEND: Indirizzo di spedizione strutturato: ${JSON.stringify(shippingAddress)}`);
 
 
     const batch = db.batch();
-    const orderRef = db.collection('orders').doc(); // Auto-generate ID
+    const orderRef = db.collection('orders').doc();
     const orderFirebaseId = orderRef.id;
     const orderNumberPrefix = isGuestOrder ? 'G-' : 'C-';
     const orderNumber = `${orderNumberPrefix}${new Date().getTime().toString().slice(-8)}`; 
@@ -531,19 +498,29 @@ async function handleFinalizeOrder(req, res) {
         paymentIntentId: paymentIntentId,
         deliveryMethod: orderDeliveryMethod, 
         ordineVisibile: true,
-        customerId: currentUserId, // ID utente registrato o null per guest
+        customerId: currentUserId,
         customerName: selectedAddressData?.name || guestData?.name || 'Cliente Sconosciuto',
         customerEmail: selectedAddressData?.email || guestData?.email || 'email@sconosciuta.com',
         customerPhone: selectedAddressData?.phone || selectedAddressData?.phoneNumber || guestData?.phone || 'N/D',
     };
-    console.log(`DEBUG_BACKEND: Dettagli ordine principale: ${JSON.stringify(mainOrderDetails)}`); // 🔥 NUOVO LOG
+    console.log(`DEBUG_BACKEND: Dettagli ordine principale: ${JSON.stringify(mainOrderDetails)}`);
 
     batch.set(orderRef, mainOrderDetails);
 
-    // Crea anche i sotto-ordini per ciascun negoziante
     for (const vid of vendorIdsInvolved) {
         const vendorSpecificItems = itemsToOrder.filter(item => item.vendorId === vid);
         const subTotalForVendor = vendorSpecificItems.reduce((sum, item) => sum + (item.price * item.quantity), 0.0);
+        
+        let subOrderVendorData = currentVendorFullData;
+        if (vid !== finalVendorIdForData && vendorIdsFromItems.length > 1) {
+             const subVendorDoc = await db.collection('vendors').doc(vid).get();
+             if (subVendorDoc.exists()) {
+                 subOrderVendorData = subVendorDoc.data();
+             } else {
+                 console.warn(`Dati venditore ${vid} non trovati per il sotto-ordine.`);
+             }
+        }
+
 
         const vendorSubOrderRef = db.collection('vendor_orders').doc(vid).collection('orders').doc(orderFirebaseId);
         batch.set(vendorSubOrderRef, {
@@ -556,25 +533,24 @@ async function handleFinalizeOrder(req, res) {
             status: mainOrderDetails.status,
             items: vendorSpecificItems, 
             shippingAddress: shippingAddress, 
-            vendorAddress: currentVendorFullData.pickupAddress || null, // Assumendo same pickup address for now if single vendor
-            vendorLocation: currentVendorFullData.location || null, // Assumendo same location if single vendor
+            vendorAddress: subOrderVendorData.pickupAddress || null,
+            vendorLocation: subOrderVendorData.location || null,
             subTotal: parseFloat(subTotalForVendor.toFixed(2)), 
-            pickupCategory: currentVendorFullData.userType,
+            pickupCategory: subOrderVendorData.userType,
             orderType: orderType, 
             deliveryMethod: orderDeliveryMethod,
-            totalPrice: parseFloat(subTotalForVendor + (vendorIdsInvolved.length === 1 ? shippingCost + serviceFee : 0)).toFixed(2), // Simplistic, actual sub-order total needs proper logic for marketplace
+            totalPrice: (vendorIdsInvolved.length === 1 && !isMercatoFresco)
+                        ? parseFloat(subTotalForVendor + shippingCost + serviceFee).toFixed(2)
+                        : parseFloat(subTotalForVendor).toFixed(2),
         });
-        console.log(`DEBUG_BACKEND: Dettagli sotto-ordine per venditore ${vid}: ${JSON.stringify(vendorSubOrderRef)}`); // 🔥 NUOVO LOG
+        console.log(`DEBUG_BACKEND: Dettagli sotto-ordine per venditore ${vid}: ${JSON.stringify(vendorSubOrderRef)}`);
     }
 
-    // Elimina il carrello temporaneo dopo la creazione dell'ordine
     batch.delete(cartDocRef); 
     console.log(`✅ Ordine ${orderFirebaseId} creato e carrello temporaneo ${tempCartCollectionName}/${tempGuestCartRef} eliminato.`);
 
-    // Aggiorna il contatore spedizioni gratuite se applicabile (solo daily_limit)
-    // Questa logica si applica solo agli ordini da singolo venditore con consegna a domicilio e spedizione gratuita attiva
     if (orderDeliveryMethod === 'delivery' && isShippingFree && vendorIdsInvolved.length === 1) {
-        const vendorRef = db.collection('vendors').doc(vendorId);
+        const vendorRef = db.collection('vendors').doc(finalVendorIdForData);
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
@@ -593,12 +569,9 @@ async function handleFinalizeOrder(req, res) {
         console.log(`DEBUG: Contatore spedizioni gratuite aggiornato per ${currentVendorFullData.store_name}: ${currentCount}`);
     }
 
-    await batch.commit(); // Commit di tutte le operazioni del batch
+    await batch.commit();
 
-    // INVIO EMAIL al negoziante (using the dedicated Vercel Postino function)
     try {
-        // VERCEL_URLS non è direttamente disponibile qui, quindi uso la variabile d'ambiente
-        // Assicurati che process.env.ORDER_EMAIL_NOTIFICATION_URL sia impostata nelle variabili d'ambiente di Vercel.
         const ORDER_EMAIL_NOTIFICATION_URL = process.env.ORDER_EMAIL_NOTIFICATION_URL || 'https://nodejs-serverless-function-express-phi-silk.vercel.app/api/trigger-order-email-notification';
 
         await fetch(ORDER_EMAIL_NOTIFICATION_URL, {
