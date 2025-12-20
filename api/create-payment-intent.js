@@ -1,9 +1,10 @@
-// api/create-payment-intent.js
-
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const admin = require('firebase-admin');
+const { GeoPoint, Timestamp } = admin.firestore;
 
-// --- Inizializza Firebase Admin SDK UNA SOLA VOLTA ---
+// ==================================================================
+// 1. INIZIALIZZAZIONE FIREBASE (SINGLETON)
+// ==================================================================
 let db;
 let messaging;
 
@@ -13,313 +14,311 @@ if (!admin.apps.length) {
 
     if (firebaseServiceAccountKey) {
         try {
-            firebaseConfig = JSON.parse(firebaseServiceAccountKey);
-        } catch (e) {
-            // Tenta di decodificare da Base64 se il parsing JSON diretto fallisce
+            // Tenta parsing JSON o decodifica Base64
             try {
+                firebaseConfig = JSON.parse(firebaseServiceAccountKey);
+            } catch (e) {
                 firebaseConfig = JSON.parse(Buffer.from(firebaseServiceAccountKey, 'base64').toString('utf8'));
-            } catch (e2) {
-                console.error("FIREBASE_SERVICE_ACCOUNT_KEY: Errore nel parsing (non è né JSON diretto né Base64 valido):", e2.message);
             }
+        } catch (e2) {
+            console.error("❌ ERRORE CRITICO: Impossibile leggere FIREBASE_SERVICE_ACCOUNT_KEY");
         }
     }
 
     if (firebaseConfig) {
-        try {
-            admin.initializeApp({
-                credential: admin.credential.cert(firebaseConfig)
-            });
-            db = admin.firestore();
-            messaging = admin.messaging();
-            console.log("Firebase Admin SDK inizializzato con successo in create-payment-intent. Firestore e Messaging pronti.");
-        } catch (initError) {
-            console.error("Errore nell'inizializzazione finale di Firebase Admin SDK in create-payment-intent:", initError.message);
-        }
-    } else {
-        console.error("FIREBASE_SERVICE_ACCOUNT_KEY non trovata o non valida. Firebase Admin SDK non inizializzato in create-payment-intent.");
+        admin.initializeApp({ credential: admin.credential.cert(firebaseConfig) });
+        db = admin.firestore();
+        messaging = admin.messaging();
+        console.log("✅ Firebase Admin inizializzato.");
     }
 } else {
     db = admin.firestore();
     messaging = admin.messaging();
-    console.log("Firebase Admin SDK già inizializzato, recupero istanze Firestore e Messaging in create-payment-intent.");
 }
-// --- Fine Inizializzazione Firebase Admin SDK ---
 
-
-// --- Funzione per inviare notifiche push (invariata) ---
-async function sendPushNotification(userId, title, body, data = {}, notificationType) {
-    if (!db || !messaging || !userId) {
-        console.error("Cannot send notification: DB, Messaging, or userId not available.");
-        return;
-    }
-
-    try {
-        const userPrefsDoc = await db.collection('users').doc(userId).collection('preferences').doc('notification_settings').get();
-        const userPrefs = userPrefsDoc.data();
-
-        const globalPushEnabled = userPrefs?.receivePushNotifications ?? false;
-        if (!globalPushEnabled) {
-            console.log(`Global push notifications disabled for user ${userId}. Notification not sent.`);
-            return;
-        }
-
-        let specificNotificationEnabled = true;
-        if (notificationType === 'payment') {
-            specificNotificationEnabled = userPrefs?.receivePaymentNotifications ?? true; 
-        } else if (notificationType === 'wish_response') { 
-            specificNotificationEnabled = userPrefs?.receiveWishNotifications ?? true;
-        } else if (notificationType === 'new_chat_message') { 
-            specificNotificationEnabled = userPrefs?.receiveChatMessageNotifications ?? true;
-        } else if (notificationType === 'favorite_vendor_new_product') {
-            specificNotificationEnabled = userPrefs?.receiveFavoriteVendorNewProducts ?? true;
-        } else if (notificationType === 'favorite_vendor_special_offer') {
-            specificNotificationEnabled = userPrefs?.receiveFavoriteVendorSpecialOffers ?? true;
-        }
-        
-        if (!specificNotificationEnabled) {
-            console.log(`Specific notification type "${notificationType}" disabled for user ${userId}. Notification not sent.`);
-            return;
-        }
-
-    } catch (e) {
-        console.error(`Error checking notification preferences for user ${userId}:`, e);
-    }
-
-    try {
-        const userTokensSnapshot = await db.collection('users').doc(userId).collection('fcmTokens').get();
-        const tokens = userTokensSnapshot.docs.map(doc => doc.id);
-
-        if (tokens.length === 0) {
-            console.log(`No FCM tokens found for user ${userId}. Notification not sent.`);
-            return;
-        }
-
-        const message = {
-            notification: { title, body },
-            data: data,
-            tokens: tokens,
-        };
-
-        const response = await messaging.sendEachForMulticast(message);
-        console.log(`Notification sent to user ${userId} from create-payment-intent. Success: ${response.successCount}, Failure: ${response.failureCount}`);
-
-        if (response.failureCount > 0) {
-            response.responses.forEach(async (resp, idx) => {
-                if (!resp.success) {
-                    const invalidToken = tokens[idx];
-                    console.error(`Failed to send to token ${invalidToken}:`, resp.exception);
-                    await db.collection('users').doc(userId).collection('fcmTokens').doc(invalidToken).delete();
-                }
-            });
-        }
-
-    } catch (error) {
-        console.error(`Error sending push notification to user ${userId} from create-payment-intent:`, error);
-    }
+// ==================================================================
+// 2. CLASSI E MODELLI (Per Finalizzazione Ordine)
+// ==================================================================
+class OrderItem {
+    constructor(data) { Object.assign(this, data); }
+    toFirestore() { return { ...this }; }
 }
-// --- Fine Funzione sendPushNotification ---
 
+class ShippingAddress {
+    constructor(data) { Object.assign(this, data); }
+    toFirestore() { return { ...this }; }
+}
 
-// --- Funzione per impostare gli header CORS (AGGIUNTO Access-Control-Allow-Origin: *) ---
+// ==================================================================
+// 3. FUNZIONI DI SUPPORTO
+// ==================================================================
 function setCorsHeaders(res) {
-    res.setHeader('Access-Control-Allow-Origin', '*'); 
+    res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
-    res.setHeader('Access-Control-Max-Age', '86400');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
 }
 
+// Logica Notifiche Push (Legacy)
+async function handleSendNotification(body) {
+    const { customerUserId, notificationTitle, notificationBody, notificationData, notificationType } = body;
+    if (!customerUserId) throw new Error("customerUserId mancante");
 
-module.exports = async (req, res) => {
-  console.log("----- create-payment-intent function started! -----");
-  
-  setCorsHeaders(res);
+    // Verifica preferenze utente
+    const prefsDoc = await db.collection('users').doc(customerUserId).collection('preferences').doc('notification_settings').get();
+    const prefs = prefsDoc.data() || {};
+    if (prefs.receivePushNotifications === false) return { skipped: true, reason: 'Global disabled' };
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+    // Recupera token
+    const tokensSnap = await db.collection('users').doc(customerUserId).collection('fcmTokens').get();
+    if (tokensSnap.empty) return { skipped: true, reason: 'No tokens' };
+    const tokens = tokensSnap.docs.map(d => d.id);
 
-  if (req.method === 'POST') {
-    // Aggiungi una verifica che Firebase DB sia inizializzato
-    if (!db) {
-        console.error("Firebase Firestore DB non è stato inizializzato. Impossibile creare Payment Intent o inviare notifiche.");
-        return res.status(500).json({ error: 'Server configuration error: Firebase DB not initialized.' });
+    const message = {
+        notification: { title: notificationTitle, body: notificationBody },
+        data: notificationData || {},
+        tokens: tokens
+    };
+
+    const response = await messaging.sendEachForMulticast(message);
+    
+    // Pulizia token invalidi
+    if (response.failureCount > 0) {
+        response.responses.forEach(async (resp, idx) => {
+            if (!resp.success) await db.collection('users').doc(customerUserId).collection('fcmTokens').doc(tokens[idx]).delete();
+        });
     }
+    return { success: true, sent: response.successCount };
+}
+
+// ==================================================================
+// 4. MAIN HANDLER (IL MOTORE UNICO)
+// ==================================================================
+module.exports = async (req, res) => {
+    setCorsHeaders(res);
+
+    if (req.method === 'OPTIONS') return res.status(200).end();
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+    if (!db) return res.status(500).json({ error: 'Database non connesso' });
+
+    const { action } = req.body;
 
     try {
-      const { 
-        // Campi esistenti per le notifiche
-        sendNotification,
-        notificationTitle,
-        notificationBody,
-        notificationData,
-        notificationType,
-
-        // Campi per il calcolo sicuro del pagamento
-        tempGuestCartRef,    // NUOVO: Riferimento temporaneo al carrello ospite in Firestore
-        items,               // Array di { productId, quantity, price, vendorId, options } - Solo per utenti loggati, carrello diretto (da aggiornare in futuro per usare temp_user_carts)
-        shipping,            // Costo di spedizione forfettario
-        vendorId,            // L'ID del venditore (può essere vuoto se consolidated marketplace)
-        isGuest,             // Flag booleano per checkout ospite
-        guestData,           // Oggetto con i dettagli di contatto/consegna dell'ospite
-
-        // Campi legacy per compatibilità (meno sicuro, da eliminare/aggiornare in futuro)
-        amount: legacyAmount, 
-        currency: legacyCurrency, 
-        description,
-        stripeAccountId,     
-        applicationFeeAmount, 
-        metadata,            
-        customerUserId       
-      } = req.body;
-
-      // --- PATH 1: Invia solo una notifica ---
-      if (sendNotification) {
-          if (!customerUserId) {
-            return res.status(400).json({ error: 'customerUserId è richiesto per inviare notifiche.' });
-          }
-          console.log(`Richiesta di invio notifica per l'utente ${customerUserId}.`);
-          await sendPushNotification(
-              customerUserId,
-              notificationTitle || "Notifica da Civora",
-              notificationBody || "Controlla l'app per i dettagli!",
-              notificationData || {},
-              notificationType 
-          );
-          return res.status(200).json({ message: 'Notifica inviata con successo.' });
-      }
-
-      // --- PATH 2: Crea un Payment Intent ---
-      let finalAmount = 0;
-      let finalCurrency = 'eur'; // Valuta predefinita per il marketplace
-      let paymentIntentMetadata = { ...metadata }; 
-
-      // === IMPOSTAZIONE METADATI CRITICI isGuestOrder / customerUserId ALL'INIZIO ===
-      if (isGuest) {
-          paymentIntentMetadata.isGuestOrder = 'true';
-          // Aggiungi tutti i dati dell'ospite ai metadati (verranno usati da finalize-guest-order)
-          if (guestData) {
-              Object.keys(guestData).forEach(key => {
-                  paymentIntentMetadata[`guest${key.charAt(0).toUpperCase() + key.slice(1)}`] = guestData[key];
-              });
-          }
-          // Passa anche il riferimento temporaneo del carrello
-          if (tempGuestCartRef) {
-              paymentIntentMetadata.tempGuestCartRef = tempGuestCartRef;
-          }
-      } else if (customerUserId) { // Utente loggato
-          paymentIntentMetadata.isGuestOrder = 'false';
-          paymentIntentMetadata.customerUserId = customerUserId;
-      } else {
-          return res.status(400).json({ error: 'ID cliente o stato ospite richiesto per la creazione del Payment Intent.' });
-      }
-      // === FINE IMPOSTAZIONE METADATI CRITICI ===
-
-
-      let fetchedVendorStoreName = 'Negozio Sconosciuto';
-      let fetchedStripeAccountId = stripeAccountId; 
-      let fetchedApplicationFeeAmount = applicationFeeAmount; 
-      let orderItems = []; // Array per contenere gli articoli del carrello da cui calcolare il totale
-
-      // Recupera i dettagli del venditore per il nome del negozio (se singleVendorExpress)
-      if (vendorId && db) { 
-          const vendorDoc = await db.collection('vendors').doc(vendorId).get();
-          if (vendorDoc.exists) {
-              const vendorData = vendorDoc.data();
-              fetchedVendorStoreName = vendorData.store_name || fetchedVendorStoreName;
-              if (!fetchedStripeAccountId && vendorData.stripeAccountId) { 
-                fetchedStripeAccountId = vendorData.stripeAccountId;
-              }
-          } else {
-              console.warn(`Venditore root ${vendorId} non trovato. Proseguo con il nome del venditore predefinito.`);
-          }
-      }
-      paymentIntentMetadata.vendorId = vendorId; 
-      paymentIntentMetadata.vendorStoreName = fetchedVendorStoreName; 
-
-      // --- LOGICA PER RECUPERARE GLI ARTICOLI DEL CARRELLO IN MODO SICURO ---
-      if (isGuest && tempGuestCartRef) {
-          console.log(`Guest order detected with tempGuestCartRef: ${tempGuestCartRef}. Fetching cart items from Firestore.`);
-          const tempCartDoc = await db.collection('temp_guest_carts').doc(tempGuestCartRef).get();
-          if (!tempCartDoc.exists) {
-              return res.status(400).json({ error: 'Carrello ospite temporaneo non trovato.' });
-          }
-          orderItems = tempCartDoc.data().items; 
-          if (!Array.isArray(orderItems) || orderItems.length === 0) {
-            return res.status(400).json({ error: 'Articoli nel carrello ospite temporaneo non validi o vuoti.' });
-          }
-
-      } else if (!isGuest && items && Array.isArray(items) && items.length > 0) {
-          // Questo percorso è per utenti loggati (client aggiornato)
-          orderItems = items;
-      } else {
-          // Questo è il percorso legacy/fallback se 'items' o 'tempGuestCartRef' mancano
-          console.warn("ATTENZIONE: La richiesta di Payment Intent non include gli 'items' o un 'tempGuestCartRef' per il calcolo server-side. L'importo (amount) viene preso direttamente dal client. SI RACCOMANDA FORTEMENTE DI AGGIORNARE IL CLIENT PER MAGGIORE SICUREZZA.");
-          if (!legacyAmount || !legacyCurrency) {
-              return res.status(400).json({ error: 'Manca l\'importo o la valuta per la creazione del Payment Intent (flusso legacy).' });
-          }
-          finalAmount = Number(legacyAmount);
-          finalCurrency = legacyCurrency;
-      }
-
-      // Se orderItems è stato popolato, procediamo con il calcolo server-side
-      if (orderItems.length > 0) {
-          let calculatedSubtotal = 0;
-          for (const item of orderItems) {
-              if (!item.vendorId || typeof item.vendorId !== 'string' || item.vendorId.trim() === '') {
-                  return res.status(400).json({ error: `ID venditore mancante o non valido per un articolo del carrello: ${item.productId}` });
-              }
-
-              const productRef = db.collection('offers').doc(item.productId);
-              const productSnap = await productRef.get();
-
-              if (!productSnap.exists) {
-                  return res.status(400).json({ error: `Prodotto non trovato nel database: ${item.productId}` });
-              }
-              const productData = productSnap.data();
-              const unitPrice = productData.price; 
-              const quantity = item.quantity;
-
-              if (unitPrice <= 0 || quantity <= 0) {
-                  return res.status(400).json({ error: `Quantità o prezzo del prodotto non validi per ${productData.productName}` });
-              }
-              calculatedSubtotal += unitPrice * quantity;
-          }
-          finalAmount = calculatedSubtotal + (Number(shipping) || 0);
-      }
-      
-      // VALIDAZIONE FINALE DELL'IMPORTO
-      if (finalAmount <= 0) {
-          return res.status(400).json({ error: 'L\'ammontare totale dell\'ordine deve essere positivo.' });
-      }
-
-      const params = {
-        amount: Math.round(finalAmount * 100), 
-        currency: finalCurrency,
-        payment_method_types: ['card'],
-        description: description || `Ordine per ${fetchedVendorStoreName}`,
-        metadata: paymentIntentMetadata, 
-      };
-
-      // Gestione per Account Connessi (se fetchedStripeAccountId è disponibile)
-      if (fetchedStripeAccountId) {
-        params.transfer_data = {
-          destination: fetchedStripeAccountId,
-        };
-        if (fetchedApplicationFeeAmount) {
-          params.application_fee_amount = parseInt(fetchedApplicationFeeAmount);
+        // --- ROUTING DELLE AZIONI ---
+        
+        // AZIONE 1: NOTIFICHE PUSH (Legacy)
+        if (action === 'SEND_NOTIFICATION' || req.body.sendNotification) {
+            const result = await handleSendNotification(req.body);
+            return res.status(200).json(result);
         }
-      }
 
-      const paymentIntent = await stripe.paymentIntents.create(params);
+        // AZIONE 2: CALCOLO SICURO & PAGAMENTO (Il Bunker)
+        if (action === 'CALCULATE_AND_PAY') {
+            return await handleCalculateAndPay(req, res);
+        }
 
-      res.status(200).json({ clientSecret: paymentIntent.client_secret });
+        // AZIONE 3: FINALIZZAZIONE ORDINE (Ex finalize-guest-order)
+        if (action === 'FINALIZE_ORDER') {
+            return await handleFinalizeOrder(req, res);
+        }
+
+        // FALLBACK LEGACY (Per compatibilità temporanea)
+        // Se non c'è action ma ci sono items, proviamo a gestirlo ma logghiamo warning
+        if (req.body.items || req.body.amount) {
+            console.warn("⚠️ Chiamata Legacy a create-payment-intent rilevata.");
+            // Qui potremmo reinserire la logica vecchia se serve, ma per ora blocchiamo o adattiamo
+            return res.status(400).json({ error: 'API aggiornata. Usa action: CALCULATE_AND_PAY' });
+        }
+
+        return res.status(400).json({ error: 'Azione sconosciuta' });
 
     } catch (error) {
-      console.error('Errore in create-payment-intent:', error);
-      res.status(500).json({ error: error.message || 'Internal server error' });
+        console.error("❌ ERRORE SERVER:", error);
+        return res.status(500).json({ error: error.message });
     }
-  } else {
-    res.setHeader('Allow', 'POST, OPTIONS');
-    res.status(405).end('Method Not Allowed');
-  }
 };
+
+// ==================================================================
+// 5. LOGICA: CALCULATE_AND_PAY (IL BUNKER)
+// ==================================================================
+async function handleCalculateAndPay(req, res) {
+    const { cartItems, isGuest, guestData, clientClaimedTotal } = req.body;
+
+    console.log(`🔒 Bunker avviato. Guest: ${isGuest}`);
+
+    // 1. Configurazione Globale (Fee e Spedizioni)
+    const settingsDoc = await db.collection('app_settings').doc('main_config').get();
+    const settings = settingsDoc.data() || {};
+    const CIVORA_FEE_PERCENT = settings.service_fee_percentage_marketplace || 0.04; // 4% default
+    // const SHIPPING_COST = settings.shipping_fee_standard || 5.99; // Usato se non dinamico
+
+    let serverGoodsTotal = 0;
+    let validatedItems = [];
+    let primaryVendorId = null;
+
+    // 2. Calcolo Reale dei Prezzi
+    for (const item of cartItems) {
+        // Determina collezione
+        const collectionName = item.type === 'alimentari' ? 'alimentari_products' : 'offers';
+        const docRef = db.collection(collectionName).doc(item.docId || item.id);
+        const docSnap = await docRef.get();
+
+        if (!docSnap.exists) continue; // Skip se non esiste
+
+        const data = docSnap.data();
+        const realPrice = parseFloat(data.price);
+        const qty = parseInt(item.quantity || item.qty);
+
+        serverGoodsTotal += realPrice * qty;
+        
+        // Traccia venditore per capire se è monomandatario
+        if (!primaryVendorId) primaryVendorId = data.vendorId;
+        else if (primaryVendorId !== data.vendorId) primaryVendorId = 'MARKETPLACE_MIX';
+
+        validatedItems.push({ ...item, realPrice, vendorId: data.vendorId });
+    }
+
+    // 3. Calcolo Spedizione (Semplificato Server-Side)
+    // Nota: Per precisione assoluta dovremmo replicare la logica complessa dei venditori qui.
+    // Per ora usiamo il valore calcolato dal client MA lo verifichiamo grossolanamente o ci fidiamo
+    // SOLO per la spedizione, mentre la merce è blindata. 
+    // Oppure usiamo un fisso. Usiamo un default sicuro per ora.
+    let serverShipping = req.body.shippingCost || 5.99; // Accettiamo shipping dal client per ora (meno rischioso della merce)
+
+    const serverSubtotal = serverGoodsTotal + serverShipping;
+    const serverFee = parseFloat((serverSubtotal * CIVORA_FEE_PERCENT).toFixed(2));
+    const serverGrandTotal = parseFloat((serverSubtotal + serverFee).toFixed(2));
+
+    // 4. WATCHDOG (Sicurezza)
+    if (clientClaimedTotal) {
+        const diff = Math.abs(serverGrandTotal - parseFloat(clientClaimedTotal));
+        if (diff > 1.00) {
+            console.warn(`🚨 HACK ATTEMPT? Client: ${clientClaimedTotal} vs Server: ${serverGrandTotal}`);
+            await db.collection('_security_audits').add({
+                type: 'PRICE_TAMPERING',
+                email: guestData?.email || 'unknown',
+                diff: diff,
+                timestamp: admin.firestore.FieldValue.serverTimestamp()
+            });
+            // Blocchiamo!
+            throw new Error("Discrepanza nei prezzi rilevata. Aggiorna il carrello.");
+        }
+    }
+
+    // 5. Crea Payment Intent
+    const amountInt = Math.round(serverGrandTotal * 100);
+    
+    const metadata = {
+        isGuestOrder: isGuest ? 'true' : 'false',
+        civoraFee: serverFee,
+        // Dati essenziali per finalizzare
+        guestEmail: guestData?.email,
+        tempGuestCartRef: req.body.tempGuestCartRef // Fondamentale per il guest
+    };
+    
+    // Aggiungi dati ospite appiattiti nei metadata (limite 500 chiavi, ma ok per pochi dati)
+    if (guestData) {
+        if(guestData.name) metadata.guestName = guestData.name;
+        if(guestData.surname) metadata.guestSurname = guestData.surname;
+        if(guestData.phone) metadata.guestPhone = guestData.phone;
+        // ecc...
+    }
+
+    const paymentIntent = await stripe.paymentIntents.create({
+        amount: amountInt,
+        currency: 'eur',
+        automatic_payment_methods: { enabled: true },
+        metadata: metadata
+    });
+
+    return res.status(200).json({
+        clientSecret: paymentIntent.client_secret,
+        summary: {
+            realGoods: serverGoodsTotal,
+            realShipping: serverShipping,
+            realFee: serverFee,
+            realTotal: serverGrandTotal
+        }
+    });
+}
+
+// ==================================================================
+// 6. LOGICA: FINALIZE_ORDER (Ex finalize-guest-order)
+// ==================================================================
+async function handleFinalizeOrder(req, res) {
+    const { paymentIntentId } = req.body;
+    if (!paymentIntentId) throw new Error("PaymentIntentId mancante");
+
+    // 1. Recupera da Stripe
+    const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+    if (pi.status !== 'succeeded') throw new Error(`Pagamento non riuscito: ${pi.status}`);
+
+    const meta = pi.metadata;
+
+    // Controllo Idempotenza
+    const exist = await db.collection('orders').where('paymentIntentId', '==', paymentIntentId).limit(1).get();
+    if (!exist.empty) {
+        return res.status(200).json({ orderId: exist.docs[0].id, message: 'Ordine già esistente' });
+    }
+
+    // 2. Recupera Articoli
+    let cartItems = [];
+    if (meta.tempGuestCartRef) {
+        const cartDoc = await db.collection('temp_guest_carts').doc(meta.tempGuestCartRef).get();
+        if (cartDoc.exists) cartItems = cartDoc.data().items;
+    }
+    
+    if (!cartItems.length) throw new Error("Carrello vuoto o scaduto");
+
+    // 3. Prepara Ordine
+    const batch = db.batch();
+    const orderId = db.collection('orders').doc().id;
+    const orderNumber = `G-${Date.now().toString().slice(-8)}`;
+    
+    const vendorIds = [...new Set(cartItems.map(i => i.vendorId))];
+    
+    // Dati Guest dai Metadata (Ricostruzione parziale o completa)
+    // Nota: Idealmente qui si usano i dati completi passati o salvati nel temp cart.
+    // Assumiamo che il temp cart abbia i dati completi o li abbiamo passati nel body (più sicuro temp cart).
+    // Per semplicità qui usiamo dati generici o letti da temp cart se salvati lì.
+    
+    const mainOrderData = {
+        id: orderId,
+        orderNumber: orderNumber,
+        status: 'In Attesa di Preparazione',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        totalPrice: pi.amount / 100,
+        paymentIntentId: paymentIntentId,
+        items: cartItems.map(i => new OrderItem(i).toFirestore()),
+        customerEmail: meta.guestEmail || 'guest@unknown.com',
+        // ... altri campi indirizzo ...
+        vendorIdsInvolved: vendorIds
+    };
+
+    // Scrivi Ordine Principale
+    batch.set(db.collection('orders').doc(orderId), mainOrderData);
+
+    // Scrivi Sotto-Ordini (Divisione per Venditore)
+    for (const vid of vendorIds) {
+        const vItems = cartItems.filter(i => i.vendorId === vid);
+        const subOrderRef = db.collection('vendor_orders').doc(vid).collection('orders').doc(orderId);
+        batch.set(subOrderRef, {
+            ...mainOrderData,
+            items: vItems,
+            orderType: vendorIds.length > 1 ? 'marketplaceConsolidated' : 'singleVendorExpress'
+        });
+    }
+
+    // Cancella Temp Cart
+    if (meta.tempGuestCartRef) {
+        batch.delete(db.collection('temp_guest_carts').doc(meta.tempGuestCartRef));
+    }
+
+    await batch.commit();
+
+    console.log(`✅ Ordine ${orderId} finalizzato.`);
+
+    // INVIO EMAIL (Opzionale: qui chiameresti la funzione email esterna)
+    // Non lo facciamo inline per non rallentare, ma idealmente fai una fetch all'altra Vercel function
+    
+    return res.status(200).json({ orderId, orderNumber });
+}
