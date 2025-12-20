@@ -152,7 +152,7 @@ module.exports = async (req, res) => {
 // 5. LOGICA: CALCULATE_AND_PAY (IL BUNKER)
 // ==================================================================
 async function handleCalculateAndPay(req, res) {
-    const { cartItems, isGuest, guestData, clientClaimedTotal, tempGuestCartRef, vendorId, customerUserId, deliveryMethod, selectedAddress, orderNotes } = req.body; // 🔥 NUOVO: Aggiunto orderNotes
+    const { cartItems, isGuest, guestData, clientClaimedTotal, tempGuestCartRef, vendorId, customerUserId, deliveryMethod, selectedAddress, orderNotes } = req.body;
 
     console.log(`🔒 Bunker avviato. Guest: ${isGuest}, Vendor: ${vendorId}, User: ${customerUserId}`);
     console.log(`DEBUG_BACKEND: Richiesta CALCULATE_AND_PAY - Payload: ${JSON.stringify(req.body)}`);
@@ -277,9 +277,9 @@ async function handleCalculateAndPay(req, res) {
             serviceFee: serverFee,
             totalPrice: serverGrandTotal,
             isShippingFree: isShippingFree,
-            deliveryMethod: deliveryMethod || null, // FIX: Converti undefined a null
-            selectedAddress: selectedAddress || null, // FIX: Converti undefined a null
-            orderNotes: orderNotes || null, // 🔥 NUOVO: Salva le note dell'ordine
+            deliveryMethod: deliveryMethod || null,
+            selectedAddress: selectedAddress || null,
+            orderNotes: orderNotes || null, // FIX: Converti undefined a null
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             customerUserId: customerUserId || null,
         });
@@ -419,7 +419,7 @@ async function handleFinalizeOrder(req, res) {
     const isShippingFree = tempCartData.isShippingFree;
     const orderDeliveryMethod = tempCartData.deliveryMethod || deliveryMethod || 'delivery';
     const selectedAddressData = tempCartData.selectedAddress || customerShippingData || {};
-    const finalOrderNotes = tempCartData.orderNotes || orderNotes || ''; // 🔥 NUOVO: Precedenza a tempCartData.orderNotes
+    const finalOrderNotes = tempCartData.orderNotes || orderNotes || '';
 
 
     if (!itemsToOrder || itemsToOrder.length === 0) {
@@ -451,19 +451,19 @@ async function handleFinalizeOrder(req, res) {
     let shippingAddress = null;
     if (orderDeliveryMethod === 'delivery' && selectedAddressData) {
          shippingAddress = {
-            street: selectedAddressData.street,
-            city: selectedAddressData.city,
-            zipCode: selectedAddressData.cap || selectedAddressData.zipCode,
-            province: selectedAddressData.province,
+            street: selectedAddressData.street || null,
+            city: selectedAddressData.city || null,
+            zipCode: selectedAddressData.cap || selectedAddressData.zipCode || null,
+            province: selectedAddressData.province || null,
             country: selectedAddressData.country || 'IT', // Assicurati che sia IT o codice ISO 3166-1 alpha-2
-            name: selectedAddressData.name,
-            phone: selectedAddressData.phone || selectedAddressData.phoneNumber,
-            email: selectedAddressData.email,
-            houseNumber: selectedAddressData.houseNumber,
-            floor: selectedAddressData.floor,
-            hasDog: selectedAddressData.hasDog,
-            noBell: selectedAddressData.noBell,
-            deliveryNotes: finalOrderNotes || selectedAddressData.deliveryNotesForAddress || '', // Note globali o dell'indirizzo
+            name: selectedAddressData.name || null,
+            phone: selectedAddressData.phone || selectedAddressData.phoneNumber || null,
+            email: selectedAddressData.email || null,
+            houseNumber: selectedAddressData.houseNumber || null, // FIX: Default a null
+            floor: selectedAddressData.floor || null, // FIX: Default a null
+            hasDog: selectedAddressData.hasDog || false, // FIX: Default a false
+            noBell: selectedAddressData.noBell || false, // FIX: Default a false
+            deliveryNotes: finalOrderNotes || selectedAddressData.deliveryNotesForAddress || null, // FIX: Default a null
         };
     }
     console.log(`DEBUG_BACKEND: Indirizzo di spedizione strutturato: ${JSON.stringify(shippingAddress)}`);
@@ -488,7 +488,7 @@ async function handleFinalizeOrder(req, res) {
         shippingFee: shippingCost,
         serviceFee: serviceFee,
         totalPrice: totalPrice,
-        orderNotes: finalOrderNotes, // 🔥 NUOVO: Usa finalOrderNotes
+        orderNotes: finalOrderNotes,
         shippingAddress: shippingAddress, 
         items: itemsToOrder,
         vendorId: (vendorIdsInvolved.length === 1 && !isMercatoFresco) ? vendorIdsInvolved[0] : null, 
