@@ -62,7 +62,7 @@ function setCorsHeaders(res) {
 // Funzione helper per determinare se due date sono lo stesso giorno (necessaria per il contatore spedizioni gratuite)
 function isSameDay(date1, date2) {
     const d1 = date1 instanceof Date ? date1 : date1.toDate(); // Converte Timestamp se necessario
-    const d2 = date2 instanceof Date ? date2 : date2.toDate(); // Converte Timestamp se necessario
+    const d2 = date2 instanceof Date ? date2 : d2.toDate(); // Converte Timestamp se necessario
 
     return d1.getFullYear() === d2.getFullYear() &&
            d1.getMonth() === d2.getMonth() &&
@@ -453,10 +453,11 @@ async function handleFinalizeOrder(req, res) {
         shippingAddress: shippingAddress, // Oggetto strutturato
         vendorAddress: currentVendorFullData.pickupAddress || null, // Indirizzo del negozio
         vendorLocation: currentVendorFullData.location || null, // Posizione del negozio
-        subTotal: mainOrderDetails.subTotal,
+        subTotal: mainOrderDetails.subTotal, // ✅ AGGIUNTO: subTotal
         pickupCategory: currentVendorFullData.userType,
         orderType: orderType, // Imposta il tipo d'ordine corretto
         deliveryMethod: 'delivery',
+        totalPrice: mainOrderDetails.totalPrice, // ✅ AGGIUNTO: totalPrice
     });
 
     // Elimina il carrello temporaneo dopo la creazione dell'ordine
@@ -489,6 +490,7 @@ async function handleFinalizeOrder(req, res) {
     // INVIO EMAIL al negoziante (using the dedicated Vercel Postino function)
     try {
         // VERCEL_URLS non è direttamente disponibile qui, quindi uso la variabile d'ambiente
+        // Assicurati che process.env.ORDER_EMAIL_NOTIFICATION_URL sia impostata nelle variabili d'ambiente di Vercel.
         const ORDER_EMAIL_NOTIFICATION_URL = process.env.ORDER_EMAIL_NOTIFICATION_URL || 'https://nodejs-serverless-function-express-phi-silk.vercel.app/api/trigger-order-email-notification';
 
         await fetch(ORDER_EMAIL_NOTIFICATION_URL, {
