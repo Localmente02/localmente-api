@@ -279,7 +279,7 @@ async function handleCalculateAndPay(req, res) {
             isShippingFree: isShippingFree,
             deliveryMethod: deliveryMethod || null,
             selectedAddress: selectedAddress || null,
-            orderNotes: orderNotes || null, // FIX: Converti undefined a null
+            orderNotes: orderNotes || null, // FIX: Converti undefined a null per Firestore
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             customerUserId: customerUserId || null,
         });
@@ -405,7 +405,7 @@ async function handleFinalizeOrder(req, res) {
     const cartDoc = await cartDocRef.get();
 
     if (!cartDoc.exists) {
-        console.error(`Temp cart ${tempCartCollectionName}/${tempGuestCartRef} not found during finalization.`);
+            console.error(`Temp cart ${tempCartCollectionName}/${tempGuestCartRef} not found during finalization. Payload: ${JSON.stringify(req.body)}`); // 🔥 NUOVO: Logga il payload per debug
         throw new Error('Carrello temporaneo non trovato o scaduto per la finalizzazione.');
     }
     const tempCartData = cartDoc.data();
@@ -455,15 +455,15 @@ async function handleFinalizeOrder(req, res) {
             city: selectedAddressData.city || null,
             zipCode: selectedAddressData.cap || selectedAddressData.zipCode || null,
             province: selectedAddressData.province || null,
-            country: selectedAddressData.country || 'IT', // Assicurati che sia IT o codice ISO 3166-1 alpha-2
+            country: selectedAddressData.country || 'IT', 
             name: selectedAddressData.name || null,
             phone: selectedAddressData.phone || selectedAddressData.phoneNumber || null,
             email: selectedAddressData.email || null,
-            houseNumber: selectedAddressData.houseNumber || null, // FIX: Default a null
-            floor: selectedAddressData.floor || null, // FIX: Default a null
-            hasDog: selectedAddressData.hasDog || false, // FIX: Default a false
-            noBell: selectedAddressData.noBell || false, // FIX: Default a false
-            deliveryNotes: finalOrderNotes || selectedAddressData.deliveryNotesForAddress || null, // FIX: Default a null
+            houseNumber: selectedAddressData.houseNumber || null, 
+            floor: selectedAddressData.floor || null, 
+            hasDog: selectedAddressData.hasDog || false, 
+            noBell: selectedAddressData.noBell || false, 
+            deliveryNotes: finalOrderNotes || selectedAddressData.deliveryNotesForAddress || null,
         };
     }
     console.log(`DEBUG_BACKEND: Indirizzo di spedizione strutturato: ${JSON.stringify(shippingAddress)}`);
@@ -563,7 +563,7 @@ async function handleFinalizeOrder(req, res) {
         currentCount++;
 
         batch.update(vendorRef, {
-            contatore_spedizioni_gratuite: currentCount,
+            contatore_spedizioni_gratuite: currentCount, 
             data_ultimo_reset_contatore: admin.firestore.Timestamp.fromDate(today)
         });
         console.log(`DEBUG: Contatore spedizioni gratuite aggiornato per ${currentVendorFullData.store_name}: ${currentCount}`);
