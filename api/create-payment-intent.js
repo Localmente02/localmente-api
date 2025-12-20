@@ -62,7 +62,11 @@ function setCorsHeaders(res) {
 // Funzione helper per determinare se due date sono lo stesso giorno (necessaria per il contatore spedizioni gratuite)
 function isSameDay(date1, date2) {
     const d1 = date1 instanceof Date ? date1 : date1.toDate(); // Converte Timestamp se necessario
-    const d2 = date2 instanceof Date ? date2 : d2.toDate(); // Converte Timestamp se necessario
+    const d2 = date2 instanceof Date ? date2 : date2.toDate(); // Converte Timestamp se necessario
+
+    if (!d1 || !d2 || !(d1 instanceof Date) || !(d2 instanceof Date)) {
+        return false;
+    }
 
     return d1.getFullYear() === d2.getFullYear() &&
            d1.getMonth() === d2.getMonth() &&
@@ -376,7 +380,11 @@ async function handleFinalizeOrder(req, res) {
     const isGuestOrder = !!guestData;
     const currentUserId = customerUserId || null;
 
-    let tempCartCollectionName = isGuestOrder ? 'temp_guest_carts' : 'temp_carts';
+    let tempCartCollectionName = 'temp_carts'; // Default per utente loggato
+    if (isGuestOrder) { // Se è un ordine ospite dal payload
+        tempCartCollectionName = 'temp_guest_carts';
+    }
+
     if (paymentIntentId && paymentIntentId !== 'FREE_ORDER') {
         try {
             const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
@@ -387,6 +395,8 @@ async function handleFinalizeOrder(req, res) {
         } catch (error) {
             console.warn(`AVVISO: Impossibile recuperare metadata per PaymentIntent ${paymentIntentId}. Usando collezione inferita.`);
         }
+    } else { // Per ordini gratuiti o alla consegna, ci affidiamo al flag isGuestOrder
+        console.log(`DEBUG_BACKEND: Nessun PaymentIntentId o FREE_ORDER. Usando collezione basata su isGuestOrder: ${tempCartCollectionName}`);
     }
 
 
