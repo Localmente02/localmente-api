@@ -405,7 +405,7 @@ async function handleFinalizeOrder(req, res) {
     const cartDoc = await cartDocRef.get();
 
     if (!cartDoc.exists) {
-            console.error(`Temp cart ${tempCartCollectionName}/${tempGuestCartRef} not found during finalization. Payload: ${JSON.stringify(req.body)}`); // 🔥 NUOVO: Logga il payload per debug
+            console.error(`Temp cart ${tempCartCollectionName}/${tempGuestCartRef} not found during finalization. Payload: ${JSON.stringify(req.body)}`);
         throw new Error('Carrello temporaneo non trovato o scaduto per la finalizzazione.');
     }
     const tempCartData = cartDoc.data();
@@ -584,7 +584,7 @@ async function handleFinalizeOrder(req, res) {
                 customerEmail: mainOrderDetails.customerEmail,
                 customerPhone: mainOrderDetails.customerPhone,
                 shippingAddress: mainOrderDetails.shippingAddress,
-                items: mainOrderDetails.items.map(item => item.toFirestore()),
+                items: mainOrderDetails.items, // 🔥 FIX: non chiamare .map(item => item.toFirestore()) qui
                 paymentMethod: mainOrderDetails.paymentMethod,
                 totalPrice: mainOrderDetails.totalPrice,
                 deliveryMethod: mainOrderDetails.deliveryMethod,
