@@ -152,10 +152,10 @@ module.exports = async (req, res) => {
 // 5. LOGICA: CALCULATE_AND_PAY (IL BUNKER)
 // ==================================================================
 async function handleCalculateAndPay(req, res) {
-    const { cartItems, isGuest, guestData, clientClaimedTotal, tempGuestCartRef, vendorId, customerUserId, deliveryMethod, selectedAddress } = req.body;
+    const { cartItems, isGuest, guestData, clientClaimedTotal, tempGuestCartRef, vendorId, customerUserId, deliveryMethod, selectedAddress, orderNotes } = req.body; // 🔥 NUOVO: Aggiunto orderNotes
 
     console.log(`🔒 Bunker avviato. Guest: ${isGuest}, Vendor: ${vendorId}, User: ${customerUserId}`);
-    console.log(`DEBUG_BACKEND: Richiesta CALCULATE_AND_PAY - Payload: ${JSON.stringify(req.body)}`); // 🔥 Logga l'intero payload
+    console.log(`DEBUG_BACKEND: Richiesta CALCULATE_AND_PAY - Payload: ${JSON.stringify(req.body)}`);
 
     const tempCartCollectionName = isGuest ? 'temp_guest_carts' : 'temp_carts';
 
@@ -277,8 +277,9 @@ async function handleCalculateAndPay(req, res) {
             serviceFee: serverFee,
             totalPrice: serverGrandTotal,
             isShippingFree: isShippingFree,
-            deliveryMethod: deliveryMethod || null, // 🔥 FIX: Converti undefined a null
-            selectedAddress: selectedAddress || null, // 🔥 FIX: Converti undefined a null
+            deliveryMethod: deliveryMethod || null, // FIX: Converti undefined a null
+            selectedAddress: selectedAddress || null, // FIX: Converti undefined a null
+            orderNotes: orderNotes || null, // 🔥 NUOVO: Salva le note dell'ordine
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             customerUserId: customerUserId || null,
         });
@@ -289,7 +290,7 @@ async function handleCalculateAndPay(req, res) {
     // 6. WATCHDOG (Sicurezza) - Confronta il totale calcolato dal client con quello del server
     if (clientClaimedTotal !== undefined && clientClaimedTotal > 0) {
         const diff = Math.abs(serverGrandTotal * 100 - clientClaimedTotal);
-        if (diff > 100) {
+        if (diff > 100) { // Tolleranza di 1 euro (100 centesimi)
             console.warn(`🚨 HACK ATTEMPT? Client claimed: ${clientClaimedTotal/100} vs Server calculated: ${serverGrandTotal}`);
             await db.collection('_security_audits').add({
                 type: 'PRICE_TAMPERING',
@@ -418,6 +419,7 @@ async function handleFinalizeOrder(req, res) {
     const isShippingFree = tempCartData.isShippingFree;
     const orderDeliveryMethod = tempCartData.deliveryMethod || deliveryMethod || 'delivery';
     const selectedAddressData = tempCartData.selectedAddress || customerShippingData || {};
+    const finalOrderNotes = tempCartData.orderNotes || orderNotes || ''; // 🔥 NUOVO: Precedenza a tempCartData.orderNotes
 
 
     if (!itemsToOrder || itemsToOrder.length === 0) {
@@ -428,10 +430,8 @@ async function handleFinalizeOrder(req, res) {
     const vendorIdsFromItems = [...new Set(itemsToOrder.map(item => item.vendorId))];
     const firstVendorId = vendorIdsFromItems[0];
     
-    // Recupera i dati del venditore principale. Se `vendorId` è passato nel body (per singleVendor), usalo.
-    // Altrimenti, usa il primo `vendorId` dal carrello per recuperare i dati.
     let currentVendorFullData = {};
-    const finalVendorIdForData = vendorId || firstVendorId; // Priorità al vendorId dal body
+    const finalVendorIdForData = vendorId || firstVendorId;
     
     if (finalVendorIdForData) {
         const vendorDoc = await db.collection('vendors').doc(finalVendorIdForData).get();
@@ -455,7 +455,7 @@ async function handleFinalizeOrder(req, res) {
             city: selectedAddressData.city,
             zipCode: selectedAddressData.cap || selectedAddressData.zipCode,
             province: selectedAddressData.province,
-            country: selectedAddressData.country || 'IT',
+            country: selectedAddressData.country || 'IT', // Assicurati che sia IT o codice ISO 3166-1 alpha-2
             name: selectedAddressData.name,
             phone: selectedAddressData.phone || selectedAddressData.phoneNumber,
             email: selectedAddressData.email,
@@ -463,7 +463,7 @@ async function handleFinalizeOrder(req, res) {
             floor: selectedAddressData.floor,
             hasDog: selectedAddressData.hasDog,
             noBell: selectedAddressData.noBell,
-            deliveryNotes: orderNotes || selectedAddressData.deliveryNotesForAddress || '',
+            deliveryNotes: finalOrderNotes || selectedAddressData.deliveryNotesForAddress || '', // Note globali o dell'indirizzo
         };
     }
     console.log(`DEBUG_BACKEND: Indirizzo di spedizione strutturato: ${JSON.stringify(shippingAddress)}`);
@@ -488,7 +488,7 @@ async function handleFinalizeOrder(req, res) {
         shippingFee: shippingCost,
         serviceFee: serviceFee,
         totalPrice: totalPrice,
-        orderNotes: orderNotes, 
+        orderNotes: finalOrderNotes, // 🔥 NUOVO: Usa finalOrderNotes
         shippingAddress: shippingAddress, 
         items: itemsToOrder,
         vendorId: (vendorIdsInvolved.length === 1 && !isMercatoFresco) ? vendorIdsInvolved[0] : null, 
