@@ -377,7 +377,7 @@ async function handleFinalizeOrder(req, res) {
     if (!paymentIntentId && paymentMethod !== 'FREE_ORDER' && !paymentMethod.startsWith('onDelivery')) throw new Error("PaymentIntentId mancante per pagamento con carta.");
     if (!tempGuestCartRef) throw new Error("Riferimento carrello temporaneo mancante.");
     
-    const isGuestOrder = !!guestData;
+    const isGuestOrder = !!guestData; // Determina se è un ordine ospite
     const currentUserId = customerUserId || null;
 
     let tempCartCollectionName = 'temp_carts'; // Default per utente loggato
@@ -396,7 +396,7 @@ async function handleFinalizeOrder(req, res) {
             console.warn(`AVVISO: Impossibile recuperare metadata per PaymentIntent ${paymentIntentId}. Usando collezione inferita.`);
         }
     } else { // Per ordini gratuiti o alla consegna, ci affidiamo al flag isGuestOrder
-        console.log(`DEBUG_BACKEND: Nessun PaymentIntentId o FREE_ORDER. Usando collezione basata su isGuestOrder: ${tempCartCollectionName}`);
+        console.log(`DEBUG_BACKEND: Nessuno PaymentIntentId o FREE_ORDER. Usando collezione basata su isGuestOrder: ${tempCartCollectionName}`);
     }
 
 
@@ -512,6 +512,8 @@ async function handleFinalizeOrder(req, res) {
         customerName: selectedAddressData?.name || guestData?.name || 'Cliente Sconosciuto',
         customerEmail: selectedAddressData?.email || guestData?.email || 'email@sconosciuta.com',
         customerPhone: selectedAddressData?.phone || selectedAddressData?.phoneNumber || guestData?.phone || 'N/D',
+        // ✨ FIX CRUCIALE QUI: Aggiungiamo il campo isGuest all'ordine principale ✨
+        isGuest: isGuestOrder,
     };
     console.log(`DEBUG_BACKEND: Dettagli ordine principale: ${JSON.stringify(mainOrderDetails)}`);
 
@@ -552,6 +554,8 @@ async function handleFinalizeOrder(req, res) {
             totalPrice: (vendorIdsInvolved.length === 1 && !isMercatoFresco)
                         ? parseFloat(subTotalForVendor + shippingCost + serviceFee).toFixed(2)
                         : parseFloat(subTotalForVendor).toFixed(2),
+            // ✨ FIX CRUCIALE QUI: Aggiungiamo il campo isGuest al sotto-ordine del negoziante ✨
+            isGuest: isGuestOrder,
         });
         console.log(`DEBUG_BACKEND: Dettagli sotto-ordine per venditore ${vid}: ${JSON.stringify(vendorSubOrderRef)}`);
     }
