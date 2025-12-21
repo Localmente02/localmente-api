@@ -490,7 +490,8 @@ async function handleFinalizeOrder(req, res) {
         orderNumber: orderNumber,
         orderType: orderType, 
         paymentMethod: paymentMethod,
-        status: (paymentMethod === 'card' || paymentMethod.startsWith('onDelivery')) ? 'In Attesa di Preparazione' : 'In elaborazione',
+        // ✨ FIX QUI: Usa il codice di stato standardizzato 'pending' ✨
+        status: 'pending', // Inizialmente l'ordine è 'pending' (In Attesa di Preparazione)
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         itemCount: itemsToOrder.length,
@@ -512,7 +513,6 @@ async function handleFinalizeOrder(req, res) {
         customerName: selectedAddressData?.name || guestData?.name || 'Cliente Sconosciuto',
         customerEmail: selectedAddressData?.email || guestData?.email || 'email@sconosciuta.com',
         customerPhone: selectedAddressData?.phone || selectedAddressData?.phoneNumber || guestData?.phone || 'N/D',
-        // ✨ FIX CRUCIALE QUI: Aggiungiamo il campo isGuest all'ordine principale ✨
         isGuest: isGuestOrder,
     };
     console.log(`DEBUG_BACKEND: Dettagli ordine principale: ${JSON.stringify(mainOrderDetails)}`);
@@ -542,7 +542,8 @@ async function handleFinalizeOrder(req, res) {
             customerName: mainOrderDetails.customerName,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             priority: orderPriority, 
-            status: mainOrderDetails.status,
+            // ✨ FIX QUI: Usa il codice di stato standardizzato 'pending' ✨
+            status: 'pending', // Inizialmente l'ordine è 'pending' (In Attesa di Preparazione)
             items: vendorSpecificItems, 
             shippingAddress: shippingAddress, 
             vendorAddress: subOrderVendorData.pickupAddress || null,
@@ -554,7 +555,6 @@ async function handleFinalizeOrder(req, res) {
             totalPrice: (vendorIdsInvolved.length === 1 && !isMercatoFresco)
                         ? parseFloat(subTotalForVendor + shippingCost + serviceFee).toFixed(2)
                         : parseFloat(subTotalForVendor).toFixed(2),
-            // ✨ FIX CRUCIALE QUI: Aggiungiamo il campo isGuest al sotto-ordine del negoziante ✨
             isGuest: isGuestOrder,
         });
         console.log(`DEBUG_BACKEND: Dettagli sotto-ordine per venditore ${vid}: ${JSON.stringify(vendorSubOrderRef)}`);
