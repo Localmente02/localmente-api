@@ -514,6 +514,7 @@ async function handleFinalizeOrder(req, res) {
         customerEmail: selectedAddressData?.email || guestData?.email || 'email@sconosciuta.com',
         customerPhone: selectedAddressData?.phone || selectedAddressData?.phoneNumber || guestData?.phone || 'N/D',
         isGuest: isGuestOrder,
+        riderId: null, // ✨ AGGIUNTO IL CAMPO riderId A NULL QUI ✨
     };
     console.log(`DEBUG_BACKEND: Dettagli ordine principale: ${JSON.stringify(mainOrderDetails)}`);
 
@@ -556,6 +557,7 @@ async function handleFinalizeOrder(req, res) {
                         ? parseFloat(subTotalForVendor + shippingCost + serviceFee).toFixed(2)
                         : parseFloat(subTotalForVendor).toFixed(2),
             isGuest: isGuestOrder,
+            riderId: null, // ✨ AGGIUNTO IL CAMPO riderId A NULL QUI ✨
         });
         console.log(`DEBUG_BACKEND: Dettagli sotto-ordine per venditore ${vid}: ${JSON.stringify(vendorSubOrderRef)}`);
     }
