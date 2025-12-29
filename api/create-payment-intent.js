@@ -156,7 +156,7 @@ module.exports = async (req, res) => {
 // 5. LOGICA: CALCULATE_AND_PAY (IL BUNKER)
 // ==================================================================
 async function handleCalculateAndPay(req, res) {
-    const { cartItems, isGuest, guestData, clientClaimedTotal, tempGuestCartRef, vendorId, customerUserId, deliveryMethod, selectedAddress, orderNotes, deliveryNotesForRider } = req.body; // AGGIUNTO deliveryNotesForRider QUI
+    const { cartItems, isGuest, guestData, clientClaimedTotal, tempGuestCartRef, vendorId, customerUserId, deliveryMethod, selectedAddress, orderNotes, deliveryNotesForRider } = req.body;
     
     console.log(`🔒 Bunker avviato. Guest: ${isGuest}, Vendor: ${vendorId}, User: ${customerUserId}`);
     console.log(`DEBUG_BACKEND: Richiesta CALCULATE_AND_PAY - Payload: ${JSON.stringify(req.body)}`);
@@ -186,19 +186,32 @@ async function handleCalculateAndPay(req, res) {
 
     // 2. Calcolo Reale dei Prezzi e Validazione Articoli
     for (const item of cartItems) {
-        const collectionName = item.type === 'alimentari' ? 'alimentari_products' : 'offers'; // Assicurati che 'type' sia corretto
+        let collectionName;
+        // ✨ FIX QUI: LOGICA AGGIORNATA PER SELEZIONARE LA COLLEZIONE CORRETTA IN BASE A item.type ✨
+        if (item.type === 'alimentari') {
+            collectionName = 'alimentari_products';
+        } else if (item.type === 'mercato_fresco') { // NUOVO: Aggiungi il tipo per Mercato Fresco
+            collectionName = 'mercato_fresco_product';
+        } else {
+            collectionName = 'offers'; // Default per negozianti generici
+        }
+        // console.log(`DEBUG_BACKEND: Item type: ${item.type}, Collection used: ${collectionName}`); // Debug utile
+
         const docRef = db.collection(collectionName).doc(item.docId || item.id);
         const docSnap = await docRef.get();
 
         if (!docSnap.exists) {
             console.warn(`Articolo non trovato nel DB: ${item.docId || item.id} nella collezione ${collectionName}. Saltato.`);
+            // Se il prodotto non esiste, potremmo lanciare un errore o saltare l'articolo e ricalcolare
+            // Per ora lo salta, ma se questo è un errore critico per te, cambia in:
+            // throw new Error(`Prodotto "${item.productName || item.id}" non trovato nel catalogo.`);
             continue; 
         }
 
         const data = docSnap.data();
         let realPrice = parseFloat(data.price); // Prezzo base di default
 
-        // *** INIZIO DELLA CORREZIONE PER LE VARIANTI ***
+        // *** LOGICA CORRETTA PER LE VARIANTI (GIÀ IMPLEMENTATA) ***
         if (item.options && (item.options.color || item.options.size)) {
             const productVariants = data.productVariants || [];
             const selectedColor = item.options.color;
@@ -219,12 +232,7 @@ async function handleCalculateAndPay(req, res) {
                     }
                 }
             } else if (selectedSize && data.productSizes && data.productSizes.length > 0) {
-                // Questo blocco gestisce prodotti con solo taglie (senza colori) o quando solo la taglia è rilevante
-                // Se la tua implementazione prevede che le taglie siano sempre nidificate nei colori,
-                // questo else if potrebbe non essere necessario o andrebbe adattato.
-                // Per ora, lo lascio come riferimento, ma il tuo frontend sembra sempre inviare il colore
-                // se ci sono varianti complesse.
-                const sizeVariant = productVariants.find(v => v.name === selectedSize); // Assumendo che sizeVariants sia un array diretto qui
+                const sizeVariant = productVariants.find(v => v.name === selectedSize);
                 if (sizeVariant && sizeVariant.price !== null && !isNaN(parseFloat(sizeVariant.price))) {
                     foundVariantPrice = parseFloat(sizeVariant.price);
                 }
@@ -236,7 +244,7 @@ async function handleCalculateAndPay(req, res) {
                 console.warn(`Prezzo variante non trovato per item ${item.docId} con opzioni ${JSON.stringify(item.options)}. Usato prezzo base: ${data.price}`);
             }
         }
-        // *** FINE DELLA CORREZIONE PER LE VARIANTI ***
+        // *** FINE LOGICA VARIANTI ***
         
         const qty = parseInt(item.quantity);
 
@@ -248,13 +256,13 @@ async function handleCalculateAndPay(req, res) {
         validatedItems.push({ 
             ...item, 
             docId: item.docId || item.id,
-            productName: data.productName,
-            imageUrl: data.primaryImageUrl || data.productImageUrl || '/assets/placeholder_fallback_image.png',
+            productName: data.productName || data.name, // Uso data.name per Mercato Fresco se product.name non esiste
+            imageUrl: data.primaryImageUrl || data.productImageUrl || data.imageUrl || '/assets/placeholder_fallback_image.png', // Uso data.imageUrl per Mercato Fresco
             price: realPrice, // Ora usa il prezzo corretto della variante o il prezzo base
             vendorId: data.vendorId,
             vendorStoreName: data.store_name || 'Sconosciuto',
             options: item.options || {},
-            type: item.type
+            type: item.type // Mantieni il tipo originale
         });
     }
     serverGoodsTotal = parseFloat(serverGoodsTotal.toFixed(2));
@@ -412,7 +420,7 @@ async function handleCalculateAndPay(req, res) {
 // 6. LOGICA: FINALIZE_ORDER (Ex finalize-guest-order)
 // ==================================================================
 async function handleFinalizeOrder(req, res) {
-    const { paymentIntentId, guestData, tempGuestCartRef, vendorId, paymentMethod, customerUserId, customerShippingData, deliveryMethod, orderNotes, deliveryNotesForRider, isMercatoFresco } = req.body; // AGGIUNTO deliveryNotesForRider QUI
+    const { paymentIntentId, guestData, tempGuestCartRef, vendorId, paymentMethod, customerUserId, customerShippingData, deliveryMethod, orderNotes, deliveryNotesForRider, isMercatoFresco } = req.body;
     
     console.log(`DEBUG_BACKEND: Richiesta FINALIZE_ORDER - Payload: ${JSON.stringify(req.body)}`);
 
