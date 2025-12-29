@@ -127,7 +127,7 @@ module.exports = async (req, res) => {
             return res.status(200).json(result);
         }
 
-        // AZIONE 2: CALCOLO SICURO & PAGAMENTO (Il Bunker)
+        // AZIONE 2: CALCOLO SICURO & PAGAMENTO (IL BUNKER)
         if (action === 'CALCULATE_AND_PAY') {
             return await handleCalculateAndPay(req, res);
         }
@@ -141,7 +141,7 @@ module.exports = async (req, res) => {
         // Se non c'è action ma ci sono items o amount, blocchiamo con un warning.
         if (req.body.items || req.body.amount) {
             console.warn("⚠️ Chiamata Legacy a create-payment-intent rilevata. Blocchiamo.");
-            return res.status(400).json({ error: 'API aggiornata. Usa action: CALCULATE_AND_PAY o FINALIZE_ORDER' });
+            return res.status(400).json({ error: 'API aggiornata. Usare action: CALCULATE_AND_PAY o FINALIZE_ORDER' });
         }
 
         return res.status(400).json({ error: 'Azione sconosciuta' });
@@ -156,8 +156,8 @@ module.exports = async (req, res) => {
 // 5. LOGICA: CALCULATE_AND_PAY (IL BUNKER)
 // ==================================================================
 async function handleCalculateAndPay(req, res) {
-    const { cartItems, isGuest, guestData, clientClaimedTotal, tempGuestCartRef, vendorId, customerUserId, deliveryMethod, selectedAddress, orderNotes } = req.body;
-
+    const { cartItems, isGuest, guestData, clientClaimedTotal, tempGuestCartRef, vendorId, customerUserId, deliveryMethod, selectedAddress, orderNotes, deliveryNotesForRider } = req.body; // AGGIUNTO deliveryNotesForRider QUI
+    
     console.log(`🔒 Bunker avviato. Guest: ${isGuest}, Vendor: ${vendorId}, User: ${customerUserId}`);
     console.log(`DEBUG_BACKEND: Richiesta CALCULATE_AND_PAY - Payload: ${JSON.stringify(req.body)}`);
 
@@ -325,6 +325,7 @@ async function handleCalculateAndPay(req, res) {
             deliveryMethod: deliveryMethod || null,
             selectedAddress: selectedAddress || null,
             orderNotes: orderNotes || null, // FIX: Converti undefined a null per Firestore
+            deliveryNotesForRider: deliveryNotesForRider || null, // NEW: Nota per il corriere
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             customerUserId: customerUserId || null,
         });
@@ -411,7 +412,7 @@ async function handleCalculateAndPay(req, res) {
 // 6. LOGICA: FINALIZE_ORDER (Ex finalize-guest-order)
 // ==================================================================
 async function handleFinalizeOrder(req, res) {
-    const { paymentIntentId, guestData, tempGuestCartRef, vendorId, paymentMethod, customerUserId, customerShippingData, deliveryMethod, orderNotes, isMercatoFresco } = req.body;
+    const { paymentIntentId, guestData, tempGuestCartRef, vendorId, paymentMethod, customerUserId, customerShippingData, deliveryMethod, orderNotes, deliveryNotesForRider, isMercatoFresco } = req.body; // AGGIUNTO deliveryNotesForRider QUI
     
     console.log(`DEBUG_BACKEND: Richiesta FINALIZE_ORDER - Payload: ${JSON.stringify(req.body)}`);
 
@@ -433,18 +434,15 @@ async function handleFinalizeOrder(req, res) {
                 tempCartCollectionName = pi.metadata.tempCartCollection;
                 console.log(`DEBUG_BACKEND: Sovrascritto tempCartCollectionName da PI metadata: ${tempCartCollectionName}`);
             }
+            if (pi.status !== 'succeeded') throw new Error(`Pagamento non riuscito: ${pi.status}. Stato attuale: ${pi.status}`);
         } catch (error) {
-            console.warn(`AVVISO: Impossibile recuperare metadata per PaymentIntent ${paymentIntentId}. Usando collezione inferita.`);
+            console.warn(`AVVISO: Impossibile recuperare metadata per PaymentIntent ${paymentIntentId}. Usando collezione inferita. Errore: ${error.message}`);
+            // Non bloccare se non è critico, ma logga
         }
     } else { // Per ordini gratuiti o alla consegna, ci affidiamo al flag isGuestOrder
         console.log(`DEBUG_BACKEND: Nessuno PaymentIntentId o FREE_ORDER. Usando collezione basata su isGuestOrder: ${tempCartCollectionName}`);
     }
 
-
-    if (paymentIntentId !== 'FREE_ORDER') {
-        const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
-        if (pi.status !== 'succeeded') throw new Error(`Pagamento non riuscito: ${pi.status}. Stato attuale: ${pi.status}`);
-    }
 
     const exist = await db.collection('orders').where('paymentIntentId', '==', paymentIntentId).limit(1).get();
     if (!exist.empty) {
@@ -469,8 +467,11 @@ async function handleFinalizeOrder(req, res) {
     const totalPrice = tempCartData.totalPrice;
     const isShippingFree = tempCartData.isShippingFree;
     const orderDeliveryMethod = tempCartData.deliveryMethod || deliveryMethod || 'delivery';
-    const selectedAddressData = tempCartData.selectedAddress || customerShippingData || {};
-    const finalOrderNotes = tempCartData.orderNotes || orderNotes || '';
+    
+    // selectedAddressData ora prenderà i dati più recenti dal tempCartData
+    const selectedAddressData = tempCartData.selectedAddress || customerShippingData || {}; 
+    const finalOrderNotes = tempCartData.orderNotes || orderNotes || ''; // Note per il negoziante (generali)
+    const finalDeliveryNotesForRider = tempCartData.deliveryNotesForRider || deliveryNotesForRider || ''; // Note per il corriere
 
 
     if (!itemsToOrder || itemsToOrder.length === 0) {
@@ -514,7 +515,10 @@ async function handleFinalizeOrder(req, res) {
             floor: selectedAddressData.floor || null, 
             hasDog: selectedAddressData.hasDog || false, 
             noBell: selectedAddressData.noBell || false, 
-            deliveryNotes: finalOrderNotes || selectedAddressData.deliveryNotesForAddress || null,
+            bellName: selectedAddressData.bellName || null, // NEW: Nome sul citofono
+            preferredDeliveryTime: selectedAddressData.preferredDeliveryTime || null, // NEW: Orari di preferenza
+            deliveryNotesForRider: finalDeliveryNotesForRider || null, // NEW: Note per il corriere (prende dal top-level payload)
+            deliveryNotes: selectedAddressData.deliveryNotes || selectedAddressData.deliveryNotesForAddress || null, // Note per il negoziante (specifiche dell'indirizzo)
         };
     }
     console.log(`DEBUG_BACKEND: Indirizzo di spedizione strutturato: ${JSON.stringify(shippingAddress)}`);
@@ -531,7 +535,6 @@ async function handleFinalizeOrder(req, res) {
         orderNumber: orderNumber,
         orderType: orderType, 
         paymentMethod: paymentMethod,
-        // ✨ FIX QUI: Usa il codice di stato standardizzato 'pending' ✨
         status: 'pending', // Inizialmente l'ordine è 'pending' (In Attesa di Preparazione)
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -540,7 +543,7 @@ async function handleFinalizeOrder(req, res) {
         shippingFee: shippingCost,
         serviceFee: serviceFee,
         totalPrice: totalPrice,
-        orderNotes: finalOrderNotes,
+        orderNotes: finalOrderNotes, // Usa la nota per il negoziante (generale)
         shippingAddress: shippingAddress, 
         items: itemsToOrder,
         vendorId: (vendorIdsInvolved.length === 1 && !isMercatoFresco) ? vendorIdsInvolved[0] : null, 
@@ -555,7 +558,7 @@ async function handleFinalizeOrder(req, res) {
         customerEmail: selectedAddressData?.email || guestData?.email || 'email@sconosciuta.com',
         customerPhone: selectedAddressData?.phone || selectedAddressData?.phoneNumber || guestData?.phone || 'N/D',
         isGuest: isGuestOrder,
-        riderId: null, // ✨ AGGIUNTO IL CAMPO riderId A NULL QUI ✨
+        riderId: null, // Campo per l'ID del rider che prenderà l'ordine
     };
     console.log(`DEBUG_BACKEND: Dettagli ordine principale: ${JSON.stringify(mainOrderDetails)}`);
 
@@ -584,10 +587,9 @@ async function handleFinalizeOrder(req, res) {
             customerName: mainOrderDetails.customerName,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             priority: orderPriority, 
-            // ✨ FIX QUI: Usa il codice di stato standardizzato 'pending' ✨
             status: 'pending', // Inizialmente l'ordine è 'pending' (In Attesa di Preparazione)
             items: vendorSpecificItems, 
-            shippingAddress: shippingAddress, 
+            shippingAddress: shippingAddress, // Passa lo stesso oggetto shippingAddress completo
             vendorAddress: subOrderVendorData.pickupAddress || null,
             vendorLocation: subOrderVendorData.location || null,
             subTotal: parseFloat(subTotalForVendor.toFixed(2)), 
@@ -598,7 +600,7 @@ async function handleFinalizeOrder(req, res) {
                         ? parseFloat(subTotalForVendor + shippingCost + serviceFee).toFixed(2)
                         : parseFloat(subTotalForVendor).toFixed(2),
             isGuest: isGuestOrder,
-            riderId: null, // ✨ AGGIUNTO IL CAMPO riderId A NULL QUI ✨
+            riderId: null, // Campo per l'ID del rider che prenderà l'ordine
         });
         console.log(`DEBUG_BACKEND: Dettagli sotto-ordine per venditore ${vid}: ${JSON.stringify(vendorSubOrderRef)}`);
     }
@@ -641,10 +643,12 @@ async function handleFinalizeOrder(req, res) {
                 customerEmail: mainOrderDetails.customerEmail,
                 customerPhone: mainOrderDetails.customerPhone,
                 shippingAddress: mainOrderDetails.shippingAddress,
-                items: mainOrderDetails.items, // 🔥 FIX: non chiamare .map(item => item.toFirestore()) qui
+                items: mainOrderDetails.items, // Passa gli items completi con varianti
                 paymentMethod: mainOrderDetails.paymentMethod,
                 totalPrice: mainOrderDetails.totalPrice,
                 deliveryMethod: mainOrderDetails.deliveryMethod,
+                orderNotes: mainOrderDetails.orderNotes, // Note per il negoziante (generali)
+                deliveryNotesForRider: mainOrderDetails.shippingAddress?.deliveryNotesForRider, // Note per il corriere
             })
         });
         console.log("✉️ Notifiche email al negoziante inviate.");
