@@ -186,22 +186,35 @@ async function handleCalculateAndPay(req, res) {
 
     // 2. Calcolo Reale dei Prezzi e Validazione Articoli
     for (const item of cartItems) {
-        let collectionName;
-        // ✨ FIX QUI: LOGICA AGGIORNATA PER SELEZIONARE LA COLLEZIONE CORRETTA IN BASE A item.type ✨
+        let docRef; // Ora docRef viene costruito qui direttamente
+        
+        // ✨ LOGICA AGGIORNATA PER SELEZIONARE LA COLLEZIONE CORRETTA IN BASE A item.type ✨
         if (item.type === 'alimentari') {
-            collectionName = 'alimentari_products';
-        } else if (item.type === 'mercato_fresco') { // NUOVO: Aggiungi il tipo per Mercato Fresco
-            collectionName = 'mercato_fresco_product';
+            docRef = db.collection('alimentari_products').doc(item.docId || item.id);
+        } else if (item.type === 'mercato_fresco') { // Tipo per Mercato Fresco
+            docRef = db.collection('mercato_fresco_product').doc(item.docId || item.id);
+        } else if (item.type === 'kit_ricetta') { // NUOVO: Aggiungi il tipo per Kit Ricetta
+            if (!item.vendorId) {
+                console.warn(`Articolo di tipo 'kit_ricetta' (${item.docId || item.id}) senza 'vendorId' nel carrello. Saltato.`);
+                continue; // Salta l'articolo se manca il vendorId per un kit ricetta
+            }
+            docRef = db.collection('vendors').doc(item.vendorId).collection('kit_ricette').doc(item.docId || item.id);
         } else {
-            collectionName = 'offers'; // Default per negozianti generici
+            // Default per negozianti generici o se il tipo non è riconosciuto/specificato
+            docRef = db.collection('offers').doc(item.docId || item.id);
         }
-        // console.log(`DEBUG_BACKEND: Item type: ${item.type}, Collection used: ${collectionName}`); // Debug utile
+        // console.log(`DEBUG_BACKEND: Item type: ${item.type}, Collection/Path used: ${docRef ? docRef.path : 'N/A'}`); // Debug utile
 
-        const docRef = db.collection(collectionName).doc(item.docId || item.id);
+        // Verifica che docRef sia stato assegnato correttamente prima di tentare di recuperarlo
+        if (!docRef) {
+            console.error(`ERRORE: Impossibile determinare docRef per l'articolo: ${JSON.stringify(item)}. Saltato.`);
+            continue;
+        }
+
         const docSnap = await docRef.get();
 
         if (!docSnap.exists) {
-            console.warn(`Articolo non trovato nel DB: ${item.docId || item.id} nella collezione ${collectionName}. Saltato.`);
+            console.warn(`Articolo non trovato nel DB: ${item.docId || item.id} dal percorso ${docRef.path}. Saltato.`);
             // Se il prodotto non esiste, potremmo lanciare un errore o saltare l'articolo e ricalcolare
             // Per ora lo salta, ma se questo è un errore critico per te, cambia in:
             // throw new Error(`Prodotto "${item.productName || item.id}" non trovato nel catalogo.`);
@@ -209,7 +222,11 @@ async function handleCalculateAndPay(req, res) {
         }
 
         const data = docSnap.data();
-        let realPrice = parseFloat(data.price); // Prezzo base di default
+        let realPrice = parseFloat(data.price || data.basePrice); // Prezzo base di default, considera anche 'basePrice' per kit ricette
+        if (isNaN(realPrice)) {
+            console.warn(`Prezzo non valido per l'articolo ${item.docId || item.id}. Saltato. Dati: ${JSON.stringify(data)}`);
+            continue;
+        }
 
         // *** LOGICA CORRETTA PER LE VARIANTI (GIÀ IMPLEMENTATA) ***
         if (item.options && (item.options.color || item.options.size)) {
@@ -241,12 +258,16 @@ async function handleCalculateAndPay(req, res) {
             if (foundVariantPrice !== null) {
                 realPrice = foundVariantPrice;
             } else {
-                console.warn(`Prezzo variante non trovato per item ${item.docId} con opzioni ${JSON.stringify(item.options)}. Usato prezzo base: ${data.price}`);
+                console.warn(`Prezzo variante non trovato per item ${item.docId} con opzioni ${JSON.stringify(item.options)}. Usato prezzo base: ${data.price || data.basePrice}`);
             }
         }
         // *** FINE LOGICA VARIANTI ***
         
         const qty = parseInt(item.quantity);
+        if (isNaN(qty) || qty <= 0) {
+            console.warn(`Quantità non valida per l'articolo ${item.docId || item.id}. Saltato. Quantità: ${item.quantity}`);
+            continue;
+        }
 
         serverGoodsTotal += realPrice * qty;
         
@@ -256,8 +277,8 @@ async function handleCalculateAndPay(req, res) {
         validatedItems.push({ 
             ...item, 
             docId: item.docId || item.id,
-            productName: data.productName || data.name, // Uso data.name per Mercato Fresco se product.name non esiste
-            imageUrl: data.primaryImageUrl || data.productImageUrl || data.imageUrl || '/assets/placeholder_fallback_image.png', // Uso data.imageUrl per Mercato Fresco
+            productName: data.productName || data.name || data.title, // Adatta per kit_ricette che potrebbero usare 'title'
+            imageUrl: data.primaryImageUrl || data.productImageUrl || data.imageUrl || '/assets/placeholder_fallback_image.png', // Uso data.imageUrl per Mercato Fresco e 'primaryImageUrl' per altri
             price: realPrice, // Ora usa il prezzo corretto della variante o il prezzo base
             vendorId: data.vendorId,
             vendorStoreName: data.store_name || 'Sconosciuto',
