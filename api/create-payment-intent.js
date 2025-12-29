@@ -186,7 +186,7 @@ async function handleCalculateAndPay(req, res) {
 
     // 2. Calcolo Reale dei Prezzi e Validazione Articoli
     for (const item of cartItems) {
-        const collectionName = item.type === 'alimentari' ? 'alimentari_products' : 'offers';
+        const collectionName = item.type === 'alimentari' ? 'alimentari_products' : 'offers'; // Assicurati che 'type' sia corretto
         const docRef = db.collection(collectionName).doc(item.docId || item.id);
         const docSnap = await docRef.get();
 
@@ -196,7 +196,48 @@ async function handleCalculateAndPay(req, res) {
         }
 
         const data = docSnap.data();
-        const realPrice = parseFloat(data.price);
+        let realPrice = parseFloat(data.price); // Prezzo base di default
+
+        // *** INIZIO DELLA CORREZIONE PER LE VARIANTI ***
+        if (item.options && (item.options.color || item.options.size)) {
+            const productVariants = data.productVariants || [];
+            const selectedColor = item.options.color;
+            const selectedSize = item.options.size;
+
+            let foundVariantPrice = null;
+
+            if (selectedColor) {
+                const colorVariant = productVariants.find(v => v.color === selectedColor);
+                if (colorVariant) {
+                    foundVariantPrice = parseFloat(colorVariant.colorPrice); // Prezzo della variante colore
+
+                    if (selectedSize && colorVariant.sizeVariants && colorVariant.sizeVariants.length > 0) {
+                        const sizeVariant = colorVariant.sizeVariants.find(sv => sv.name === selectedSize);
+                        if (sizeVariant && sizeVariant.price !== null && !isNaN(parseFloat(sizeVariant.price))) {
+                            foundVariantPrice = parseFloat(sizeVariant.price); // Prezzo specifico per taglia/colore
+                        }
+                    }
+                }
+            } else if (selectedSize && data.productSizes && data.productSizes.length > 0) {
+                // Questo blocco gestisce prodotti con solo taglie (senza colori) o quando solo la taglia è rilevante
+                // Se la tua implementazione prevede che le taglie siano sempre nidificate nei colori,
+                // questo else if potrebbe non essere necessario o andrebbe adattato.
+                // Per ora, lo lascio come riferimento, ma il tuo frontend sembra sempre inviare il colore
+                // se ci sono varianti complesse.
+                const sizeVariant = productVariants.find(v => v.name === selectedSize); // Assumendo che sizeVariants sia un array diretto qui
+                if (sizeVariant && sizeVariant.price !== null && !isNaN(parseFloat(sizeVariant.price))) {
+                    foundVariantPrice = parseFloat(sizeVariant.price);
+                }
+            }
+
+            if (foundVariantPrice !== null) {
+                realPrice = foundVariantPrice;
+            } else {
+                console.warn(`Prezzo variante non trovato per item ${item.docId} con opzioni ${JSON.stringify(item.options)}. Usato prezzo base: ${data.price}`);
+            }
+        }
+        // *** FINE DELLA CORREZIONE PER LE VARIANTI ***
+        
         const qty = parseInt(item.quantity);
 
         serverGoodsTotal += realPrice * qty;
@@ -209,7 +250,7 @@ async function handleCalculateAndPay(req, res) {
             docId: item.docId || item.id,
             productName: data.productName,
             imageUrl: data.primaryImageUrl || data.productImageUrl || '/assets/placeholder_fallback_image.png',
-            price: realPrice,
+            price: realPrice, // Ora usa il prezzo corretto della variante o il prezzo base
             vendorId: data.vendorId,
             vendorStoreName: data.store_name || 'Sconosciuto',
             options: item.options || {},
