@@ -114,7 +114,7 @@ module.exports = async (req, res) => {
     // LOGICA PER OTTENERE GLI SLOT DISPONIBILI PER UN SINGOLO GIORNO
     // =======================================================
     else if (action === 'getAvailableSlots') {
-      const { serviceId, date } = req.body; // Rimossa variantId per la logica semplificata
+      const { serviceId, date } = req.body; 
       
       if (!vendorId || !serviceId || !date) {
         return res.status(400).json({ error: 'Dati mancanti per la verifica del servizio.' });
@@ -125,8 +125,8 @@ module.exports = async (req, res) => {
           db.collection('vendors').doc(vendorId).get(),
           db.collection('bookings')
             .where('vendorId', '==', vendorId)
-            .where('startDateTime', '>=', new Date(date + 'T00:00:00Z'))
-            .where('startDateTime', '<=', new Date(date + 'T23:59:59Z'))
+            .where('startDateTime', '>=', new Date(date + 'T00:00:00Z')) // Inizio giornata UTC
+            .where('startDateTime', '<=', new Date(date + 'T23:59:59Z')) // Fine giornata UTC
             .where('status', 'in', ['confirmed', 'paid', 'pending', 'rescheduled'])
             .get()
       ]);
@@ -139,10 +139,8 @@ module.exports = async (req, res) => {
 
       if (!vendorDoc.exists || !vendorDoc.data().opening_hours_structured) { return res.status(200).json({ slots: [], message: 'Orari non configurati.' }); }
       
-      const dateString = date + 'T00:00:00.000Z'; 
-      const dateObj = new Date(dateString); 
-      
-      const dayOfWeek = ["Dom", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab"][dateObj.getUTCDay()];
+      const currentDayUTC = new Date(date + 'T00:00:00Z'); // Assicura che sia inizio giornata UTC
+      const dayOfWeek = ["Dom", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab"][currentDayUTC.getUTCDay()];
       const todayHours = vendorDoc.data().opening_hours_structured.find(d => d.day === dayOfWeek);
       
       if (!todayHours || !todayHours.isOpen) { return res.status(200).json({ slots: [], message: 'Negozio chiuso.' }); }
@@ -153,7 +151,10 @@ module.exports = async (req, res) => {
       }));
 
       const availableSlots = [];
-      const slotIncrement = 15; 
+      const slotIncrement = 15; // Slot di intervallo di 15 minuti
+
+      // Riferimento all'ora attuale (UTC) per bloccare slot nel passato del giorno corrente
+      const nowUtc = new Date(); 
 
       for (const slot of todayHours.slots) {
           if (!slot.from || !slot.to) continue;
@@ -161,48 +162,71 @@ module.exports = async (req, res) => {
           const [startHour, startMinute] = slot.from.split(':').map(Number);
           const [endHour, endMinute] = slot.to.split(':').map(Number);
           
-          let currentTime = new Date(date + 'T00:00:00Z'); 
+          // Costruisci gli oggetti Date per gli orari di inizio e fine dello slot di lavoro (in UTC)
+          let currentTime = new Date(currentDayUTC); 
           currentTime.setUTCHours(startHour, startMinute, 0, 0); 
 
-          const endOfWorkSlot = new Date(date + 'T00:00:00Z');
+          const endOfWorkSlot = new Date(currentDayUTC);
           endOfWorkSlot.setUTCHours(endHour, endMinute, 0, 0);
+          
+          // Se siamo nel giorno corrente, inizia la ricerca dall'ora attuale (arrotondata) o dall'inizio dello slot, il più tardi
+          let currentSlotTime = new Date(currentTime); // Inizia con l'inizio dello slot di lavoro
 
-          const nowUtc = new Date();
-          const startSearchTime = (currentTime < nowUtc && dateObj.toDateString() === nowUtc.toDateString()) ? nowUtc : currentTime;
-          
-          let currentSlotTime = new Date(startSearchTime);
-          
-          if (dateObj.toDateString() === nowUtc.toDateString()) {
-              const currentMins = currentSlotTime.getUTCMinutes();
+          // Arrotonda l'ora corrente al prossimo incremento di 15 minuti solo se è il giorno di oggi E l'ora corrente è passata
+          if (currentDayUTC.toDateString() === nowUtc.toDateString() && currentSlotTime < nowUtc) {
+              const currentMins = nowUtc.getUTCMinutes();
               const remainder = currentMins % slotIncrement;
+              currentSlotTime = new Date(nowUtc); // Inizia dall'ora attuale
               if (remainder !== 0) {
                   currentSlotTime.setUTCMinutes(currentMins + (slotIncrement - remainder));
               }
+              currentSlotTime.setUTCSeconds(0,0); // Azzera secondi e millisecondi
           }
-
+          
+          // Se l'ora di inizio del ciclo (dopo l'arrotondamento) è già oltre la fine dello slot di lavoro, salta
           if (currentSlotTime >= endOfWorkSlot) continue; 
+
 
           while (currentSlotTime < endOfWorkSlot) {
               const potentialEndTime = new Date(currentSlotTime.getTime() + serviceDuration * 60000);
               if (potentialEndTime > endOfWorkSlot) break; 
 
               let isAvailable = true;
-              
-              const isTimeSlotBusyForVendor = existingBookings.some(booking =>
-                  currentSlotTime < booking.end && potentialEndTime > booking.start
-              );
-              
-              if (isTimeSlotBusyForVendor) {
-                  isAvailable = false; 
+              let nextJumpTime = new Date(currentSlotTime.getTime() + slotIncrement * 60000); // Default advance
+
+              // Controlla sovrapposizione con prenotazioni esistenti
+              for (const booking of existingBookings) {
+                  // Condizione di sovrapposizione: (inizio nuovo < fine esistente) E (inizio esistente < fine nuovo)
+                  const overlaps = (currentSlotTime < booking.end && booking.start < potentialEndTime);
+                  
+                  if (overlaps) {
+                      isAvailable = false;
+                      // Se c'è una sovrapposizione, dobbiamo saltare oltre la fine della prenotazione che blocca
+                      const blockingBookingEndTime = booking.end.getTime();
+                      if (blockingBookingEndTime > nextJumpTime.getTime()) { // Se blocca più a lungo del prossimo slot normale
+                          let newTime = new Date(blockingBookingEndTime);
+                          const mins = newTime.getUTCMinutes();
+                          const remainder = mins % slotIncrement;
+                          if (remainder !== 0) {
+                              newTime.setUTCMinutes(mins + (slotIncrement - remainder));
+                          }
+                          newTime.setUTCSeconds(0,0); // Azzera secondi e millisecondi
+                          nextJumpTime = newTime;
+                      }
+                      break; // Trovata una sovrapposizione, non serve controllare le altre prenotazioni per questo `currentSlotTime`
+                  }
               }
               
               if (isAvailable) {
                   const hours = String(currentSlotTime.getUTCHours()).padStart(2, '0');
                   const minutes = String(currentSlotTime.getUTCMinutes()).padStart(2, '0');
                   availableSlots.push(`${hours}:${minutes}`);
+                  // Se disponibile, avanza al prossimo slot standard
+                  currentSlotTime.setUTCMinutes(currentSlotTime.getUTCMinutes() + slotIncrement);
+              } else {
+                  // Se non disponibile, salta all'ora calcolata da `nextJumpTime`
+                  currentSlotTime = nextJumpTime;
               }
-              
-              currentSlotTime.setUTCMinutes(currentSlotTime.getUTCMinutes() + slotIncrement);
           }
       }
       
@@ -232,6 +256,7 @@ module.exports = async (req, res) => {
         if (!vendorDoc.exists || !vendorDoc.data().opening_hours_structured) { return res.status(200).json({ summary: {}, message: 'Orari non configurati.' }); }
         const vendorOpeningHours = vendorDoc.data().opening_hours_structured;
 
+        // Date range per la query delle prenotazioni (inizio/fine mese in UTC)
         const firstDayOfMonth = new Date(Date.UTC(year, month, 1));
         const lastDayOfMonth = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
 
@@ -248,15 +273,15 @@ module.exports = async (req, res) => {
         }));
 
         const monthlySummary = {};
-        const today = new Date(Date.now()); // Data attuale
-        today.setUTCHours(0, 0, 0, 0); // Normalizza a inizio giornata UTC per confronto
+        const nowUtc = new Date(); // Data e ora attuali in UTC
 
-        for (let d = new Date(firstDayOfMonth); d <= lastDayOfMonth; d.setUTCDate(d.getUTCDate() + 1)) {
-            const currentDate = new Date(d); // Crea una nuova istanza per evitare modifiche al loop
+        // Loop attraverso ogni giorno del mese
+        for (let day = 1; day <= new Date(year, month + 1, 0).getDate(); day++) {
+            const currentDate = new Date(Date.UTC(year, month, day)); // Giorno corrente in UTC
             const formattedDate = currentDate.toISOString().split('T')[0]; // "YYYY-MM-DD"
 
-            // Se la data è passata, la consideriamo non disponibile
-            if (currentDate < today) {
+            // Se il giorno è già passato rispetto all'ora attuale, non è disponibile
+            if (currentDate.getTime() + (24 * 60 * 60 * 1000) <= nowUtc.getTime()) { // Se la fine del giorno è passata
                 monthlySummary[formattedDate] = false;
                 continue;
             }
@@ -272,49 +297,76 @@ module.exports = async (req, res) => {
             let hasAvailableSlotForDay = false;
             const slotIncrement = 15;
 
+            // Loop attraverso gli slot di lavoro del giorno
             for (const slot of todayHours.slots) {
                 if (!slot.from || !slot.to) continue;
 
                 const [startHour, startMinute] = slot.from.split(':').map(Number);
                 const [endHour, endMinute] = slot.to.split(':').map(Number);
 
-                let currentTime = new Date(currentDate);
-                currentTime.setUTCHours(startHour, startMinute, 0, 0);
+                // Inizio e fine dello slot di lavoro (in UTC per il giorno corrente)
+                let currentWorkSlotStart = new Date(currentDate);
+                currentWorkSlotStart.setUTCHours(startHour, startMinute, 0, 0);
 
-                const endOfWorkSlot = new Date(currentDate);
-                endOfWorkSlot.setUTCHours(endHour, endMinute, 0, 0);
+                const currentWorkSlotEnd = new Date(currentDate);
+                currentWorkSlotEnd.setUTCHours(endHour, endMinute, 0, 0);
 
-                // Se siamo nel giorno corrente, inizia la ricerca dall'ora attuale o dall'inizio dello slot, il più tardi
-                const startSearchTimeForDay = (currentTime < nowUtc && formattedDate === nowUtc.toISOString().split('T')[0]) ? nowUtc : currentTime;
-                
-                let currentSlotTime = new Date(startSearchTimeForDay);
-                
-                // Arrotonda l'ora corrente al prossimo incremento di 15 minuti se siamo nel giorno di oggi
-                if (formattedDate === nowUtc.toISOString().split('T')[0]) {
-                    const currentMins = currentSlotTime.getUTCMinutes();
+                // L'ora di inizio effettiva per cercare gli slot, considerando l'ora attuale se è il giorno odierno
+                let searchStartTime = new Date(currentWorkSlotStart);
+
+                // Se è il giorno corrente e l'inizio dello slot di lavoro è già passato rispetto all'ora attuale
+                if (currentDate.toDateString() === nowUtc.toDateString() && searchStartTime < nowUtc) {
+                    searchStartTime = new Date(nowUtc); // Inizia a cercare dall'ora attuale
+                    // Arrotonda all'incremento di slot successivo
+                    const currentMins = searchStartTime.getUTCMinutes();
                     const remainder = currentMins % slotIncrement;
                     if (remainder !== 0) {
-                        currentSlotTime.setUTCMinutes(currentMins + (slotIncrement - remainder));
+                        searchStartTime.setUTCMinutes(currentMins + (slotIncrement - remainder));
                     }
+                    searchStartTime.setUTCSeconds(0,0);
                 }
-                
-                if (currentSlotTime >= endOfWorkSlot) continue;
 
-                while (currentSlotTime < endOfWorkSlot) {
+                // Se dopo gli aggiustamenti searchStartTime è oltre la fine dello slot di lavoro, salta
+                if (searchStartTime >= currentWorkSlotEnd) continue;
+
+                let currentSlotTime = new Date(searchStartTime);
+
+                // Loop interno per trovare il primo slot disponibile nel range di lavoro
+                while (currentSlotTime < currentWorkSlotEnd) {
                     const potentialEndTime = new Date(currentSlotTime.getTime() + serviceDuration * 60000);
-                    if (potentialEndTime > endOfWorkSlot) break;
+                    if (potentialEndTime > currentWorkSlotEnd) break;
 
-                    const isTimeSlotBusyForVendor = existingBookings.some(booking =>
-                        currentSlotTime < booking.end && potentialEndTime > booking.start
-                    );
+                    let isAvailable = true;
+                    let nextJumpTime = new Date(currentSlotTime.getTime() + slotIncrement * 60000); // Default advance
 
-                    if (!isTimeSlotBusyForVendor) {
-                        hasAvailableSlotForDay = true;
-                        break; // Trovato almeno uno slot, non serve cercare oltre per questo giorno
+                    for (const booking of existingBookings) {
+                        const overlaps = (currentSlotTime < booking.end && booking.start < potentialEndTime);
+                        
+                        if (overlaps) {
+                            isAvailable = false;
+                            const blockingBookingEndTime = booking.end.getTime();
+                            if (blockingBookingEndTime > nextJumpTime.getTime()) {
+                                let newTime = new Date(blockingBookingEndTime);
+                                const mins = newTime.getUTCMinutes();
+                                const remainder = mins % slotIncrement;
+                                if (remainder !== 0) {
+                                    newTime.setUTCMinutes(mins + (slotIncrement - remainder));
+                                }
+                                newTime.setUTCSeconds(0,0);
+                                nextJumpTime = newTime;
+                            }
+                            break; 
+                        }
                     }
-                    currentSlotTime.setUTCMinutes(currentSlotTime.getUTCMinutes() + slotIncrement);
+
+                    if (isAvailable) {
+                        hasAvailableSlotForDay = true;
+                        break; // Trovato almeno uno slot disponibile per questo giorno
+                    } else {
+                        currentSlotTime = nextJumpTime;
+                    }
                 }
-                if (hasAvailableSlotForDay) break; // Se trovato uno slot per il giorno, esci dal loop degli slot
+                if (hasAvailableSlotForDay) break; // Se trovato uno slot per il giorno, esci dal loop degli slot di lavoro
             }
             monthlySummary[formattedDate] = hasAvailableSlotForDay;
         }
