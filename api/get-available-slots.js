@@ -1,5 +1,3 @@
-// api/get-available-slots.js:
-
 const admin = require('firebase-admin');
 
 if (!admin.apps.length) {
@@ -20,8 +18,8 @@ const ALLOWED_ORIGINS = [
     'https://localmente-v3-core.web.app',
     'https://localmente-site.web.app', 
     'https://www.civora.it', 
-    'http://localhost:3000', // Aggiunto per lo sviluppo locale
-    'http://127.0.0.1:5500', // Aggiunto per lo sviluppo locale (se usato con Live Server)
+    'http://localhost:3000', 
+    'http://127.0.0.1:5500', 
 ];
 
 // 2. Funzione per impostare dinamicamente l'header CORS
@@ -57,6 +55,9 @@ module.exports = async (req, res) => {
   try {
     const { action, bookingType, vendorId } = req.body; 
 
+    // =======================================================
+    // LOGICA DI SALVATAGGIO DELLA PRENOTAZIONE (BOOKING)
+    // =======================================================
     if (action === 'save_service_booking') {
         const payload = req.body;
         
@@ -81,13 +82,10 @@ module.exports = async (req, res) => {
             bookedServiceName: payload.bookedServiceName,
             bookedServicePrice: payload.bookedServicePrice,
             type: payload.type || 'cura_persona', 
-            status: payload.status || 'pending', 
+            status: payload.status || 'confirmed', // Imposta 'confirmed' per prenotazioni manuali
             
             startDateTime: admin.firestore.Timestamp.fromDate(startDateTime),
             endDateTime: admin.firestore.Timestamp.fromDate(endDateTime),
-            
-            // selectedServiceVariant: payload.selectedServiceVariant || null, // Mantenuto se il frontend lo invia (ma UI semplificata non lo farà)
-            // assignedResourceIds: payload.assignedResourceIds || [],        // Mantenuto se il frontend lo invia (ma UI semplificata non lo farà)
             
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -110,14 +108,18 @@ module.exports = async (req, res) => {
 
     if (bookingType === 'rental_fleet_check') {
         return res.status(400).json({ error: 'Logica noleggio non implementata in questo contesto.' });
-    } else if (action === 'getAvailableSlots') {
-      const { serviceId, date, variantId } = req.body; 
+    } 
+    
+    // =======================================================
+    // LOGICA PER OTTENERE GLI SLOT DISPONIBILI PER UN SINGOLO GIORNO
+    // =======================================================
+    else if (action === 'getAvailableSlots') {
+      const { serviceId, date } = req.body; // Rimossa variantId per la logica semplificata
       
       if (!vendorId || !serviceId || !date) {
         return res.status(400).json({ error: 'Dati mancanti per la verifica del servizio.' });
       }
 
-      // 1. Carica i dati necessari (ignorando le risorse individuali)
       const [serviceDoc, vendorDoc, bookingsSnapshot] = await Promise.all([
           db.collection('offers').doc(serviceId).get(),
           db.collection('vendors').doc(vendorId).get(),
@@ -125,7 +127,7 @@ module.exports = async (req, res) => {
             .where('vendorId', '==', vendorId)
             .where('startDateTime', '>=', new Date(date + 'T00:00:00Z'))
             .where('startDateTime', '<=', new Date(date + 'T23:59:59Z'))
-            .where('status', 'in', ['confirmed', 'paid', 'pending', 'rescheduled']) // Include tutti gli stati che bloccano uno slot
+            .where('status', 'in', ['confirmed', 'paid', 'pending', 'rescheduled'])
             .get()
       ]);
 
@@ -133,12 +135,10 @@ module.exports = async (req, res) => {
       const serviceData = serviceDoc.data();
       
       let serviceDuration = serviceData.serviceDuration;
-
       if (!serviceDuration) { return res.status(400).json({ error: 'Durata del servizio non specificata.' }); }
 
       if (!vendorDoc.exists || !vendorDoc.data().opening_hours_structured) { return res.status(200).json({ slots: [], message: 'Orari non configurati.' }); }
       
-      // 2. Calcola l'orario di lavoro per il giorno
       const dateString = date + 'T00:00:00.000Z'; 
       const dateObj = new Date(dateString); 
       
@@ -147,16 +147,14 @@ module.exports = async (req, res) => {
       
       if (!todayHours || !todayHours.isOpen) { return res.status(200).json({ slots: [], message: 'Negozio chiuso.' }); }
 
-      // 3. Prepara i dati per il calcolo
       const existingBookings = bookingsSnapshot.docs.map(doc => ({
         start: doc.data().startDateTime.toDate(), 
         end: doc.data().endDateTime.toDate()     
       }));
 
       const availableSlots = [];
-      const slotIncrement = 15; // Slot di intervallo di 15 minuti
+      const slotIncrement = 15; 
 
-      // 4. Inizia il calcolo
       for (const slot of todayHours.slots) {
           if (!slot.from || !slot.to) continue;
           
@@ -174,7 +172,6 @@ module.exports = async (req, res) => {
           
           let currentSlotTime = new Date(startSearchTime);
           
-          // Arrotonda l'ora corrente al prossimo incremento di 15 minuti (solo se siamo nel giorno di oggi)
           if (dateObj.toDateString() === nowUtc.toDateString()) {
               const currentMins = currentSlotTime.getUTCMinutes();
               const remainder = currentMins % slotIncrement;
@@ -185,15 +182,12 @@ module.exports = async (req, res) => {
 
           if (currentSlotTime >= endOfWorkSlot) continue; 
 
-          // 5. Loop per trovare gli slot - LOGICA SEMPLIFICATA
           while (currentSlotTime < endOfWorkSlot) {
               const potentialEndTime = new Date(currentSlotTime.getTime() + serviceDuration * 60000);
               if (potentialEndTime > endOfWorkSlot) break; 
 
               let isAvailable = true;
               
-              // SEMPLIFICAZIONE: Tratta il VENDOR come un'unica risorsa.
-              // Verifichiamo se c'è UNA QUALSIASI prenotazione che si sovrappone per questo VENDOR.
               const isTimeSlotBusyForVendor = existingBookings.some(booking =>
                   currentSlotTime < booking.end && potentialEndTime > booking.start
               );
@@ -212,9 +206,123 @@ module.exports = async (req, res) => {
           }
       }
       
-      // 6. Ritorna gli slot
       return res.status(200).json({ slots: availableSlots });
     }
+    
+    // =======================================================
+    // NUOVA LOGICA: OTTENERE IL RIEPILOGO MENSILE DELLA DISPONIBILITÀ
+    // =======================================================
+    else if (action === 'getMonthlyAvailabilitySummary') {
+        const { vendorId, serviceId, year, month } = req.body; // month è 0-indexed per JavaScript Date
+
+        if (!vendorId || !serviceId || year === undefined || month === undefined) {
+            return res.status(400).json({ error: 'Dati mancanti per il riepilogo mensile.' });
+        }
+
+        const [serviceDoc, vendorDoc] = await Promise.all([
+            db.collection('offers').doc(serviceId).get(),
+            db.collection('vendors').doc(vendorId).get()
+        ]);
+
+        if (!serviceDoc.exists) { return res.status(404).json({ error: 'Servizio non trovato.' }); }
+        const serviceData = serviceDoc.data();
+        let serviceDuration = serviceData.serviceDuration;
+        if (!serviceDuration) { return res.status(400).json({ error: 'Durata del servizio non specificata.' }); }
+
+        if (!vendorDoc.exists || !vendorDoc.data().opening_hours_structured) { return res.status(200).json({ summary: {}, message: 'Orari non configurati.' }); }
+        const vendorOpeningHours = vendorDoc.data().opening_hours_structured;
+
+        const firstDayOfMonth = new Date(Date.UTC(year, month, 1));
+        const lastDayOfMonth = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
+
+        const bookingsSnapshot = await db.collection('bookings')
+            .where('vendorId', '==', vendorId)
+            .where('startDateTime', '>=', admin.firestore.Timestamp.fromDate(firstDayOfMonth))
+            .where('startDateTime', '<=', admin.firestore.Timestamp.fromDate(lastDayOfMonth))
+            .where('status', 'in', ['confirmed', 'paid', 'pending', 'rescheduled'])
+            .get();
+
+        const existingBookings = bookingsSnapshot.docs.map(doc => ({
+            start: doc.data().startDateTime.toDate(),
+            end: doc.data().endDateTime.toDate()
+        }));
+
+        const monthlySummary = {};
+        const today = new Date(Date.now()); // Data attuale
+        today.setUTCHours(0, 0, 0, 0); // Normalizza a inizio giornata UTC per confronto
+
+        for (let d = new Date(firstDayOfMonth); d <= lastDayOfMonth; d.setUTCDate(d.getUTCDate() + 1)) {
+            const currentDate = new Date(d); // Crea una nuova istanza per evitare modifiche al loop
+            const formattedDate = currentDate.toISOString().split('T')[0]; // "YYYY-MM-DD"
+
+            // Se la data è passata, la consideriamo non disponibile
+            if (currentDate < today) {
+                monthlySummary[formattedDate] = false;
+                continue;
+            }
+
+            const dayOfWeek = ["Dom", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab"][currentDate.getUTCDay()];
+            const todayHours = vendorOpeningHours.find(h => h.day === dayOfWeek);
+
+            if (!todayHours || !todayHours.isOpen) {
+                monthlySummary[formattedDate] = false; // Negozio chiuso
+                continue;
+            }
+
+            let hasAvailableSlotForDay = false;
+            const slotIncrement = 15;
+
+            for (const slot of todayHours.slots) {
+                if (!slot.from || !slot.to) continue;
+
+                const [startHour, startMinute] = slot.from.split(':').map(Number);
+                const [endHour, endMinute] = slot.to.split(':').map(Number);
+
+                let currentTime = new Date(currentDate);
+                currentTime.setUTCHours(startHour, startMinute, 0, 0);
+
+                const endOfWorkSlot = new Date(currentDate);
+                endOfWorkSlot.setUTCHours(endHour, endMinute, 0, 0);
+
+                // Se siamo nel giorno corrente, inizia la ricerca dall'ora attuale o dall'inizio dello slot, il più tardi
+                const startSearchTimeForDay = (currentTime < nowUtc && formattedDate === nowUtc.toISOString().split('T')[0]) ? nowUtc : currentTime;
+                
+                let currentSlotTime = new Date(startSearchTimeForDay);
+                
+                // Arrotonda l'ora corrente al prossimo incremento di 15 minuti se siamo nel giorno di oggi
+                if (formattedDate === nowUtc.toISOString().split('T')[0]) {
+                    const currentMins = currentSlotTime.getUTCMinutes();
+                    const remainder = currentMins % slotIncrement;
+                    if (remainder !== 0) {
+                        currentSlotTime.setUTCMinutes(currentMins + (slotIncrement - remainder));
+                    }
+                }
+                
+                if (currentSlotTime >= endOfWorkSlot) continue;
+
+                while (currentSlotTime < endOfWorkSlot) {
+                    const potentialEndTime = new Date(currentSlotTime.getTime() + serviceDuration * 60000);
+                    if (potentialEndTime > endOfWorkSlot) break;
+
+                    const isTimeSlotBusyForVendor = existingBookings.some(booking =>
+                        currentSlotTime < booking.end && potentialEndTime > booking.start
+                    );
+
+                    if (!isTimeSlotBusyForVendor) {
+                        hasAvailableSlotForDay = true;
+                        break; // Trovato almeno uno slot, non serve cercare oltre per questo giorno
+                    }
+                    currentSlotTime.setUTCMinutes(currentSlotTime.getUTCMinutes() + slotIncrement);
+                }
+                if (hasAvailableSlotForDay) break; // Se trovato uno slot per il giorno, esci dal loop degli slot
+            }
+            monthlySummary[formattedDate] = hasAvailableSlotForDay;
+        }
+
+        return res.status(200).json({ summary: monthlySummary, message: 'Riepilogo disponibilità mensile generato.' });
+    }
+
+
   } catch (error) {
     console.error('Errore in get-available-slots:', error);
     res.status(500).json({ error: 'Errore interno del server.', details: error.message });
