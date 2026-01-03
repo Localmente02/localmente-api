@@ -126,7 +126,7 @@ module.exports = async (req, res) => {
       }
 
       const [serviceDoc, vendorDoc, bookingsSnapshot] = await Promise.all([
-          db.collection('offers').doc(serviceId).get(),
+          db.collection('artisan_services').doc(serviceId).get(), // MODIFICATO QUI: da 'offers' a 'artisan_services'
           db.collection('vendors').doc(vendorId).get(),
           db.collection('bookings')
             .where('vendorId', '==', vendorId)
@@ -251,7 +251,7 @@ module.exports = async (req, res) => {
         }
 
         const [serviceDoc, vendorDoc] = await Promise.all([
-            db.collection('offers').doc(serviceId).get(),
+            db.collection('artisan_services').doc(serviceId).get(), // MODIFICATO QUI: da 'offers' a 'artisan_services'
             db.collection('vendors').doc(vendorId).get()
         ]);
 
@@ -400,7 +400,7 @@ module.exports = async (req, res) => {
 
         // Carica tutti i servizi richiesti e gli orari di apertura del venditore in una volta
         const [servicesSnapshot, vendorDoc] = await Promise.all([
-            db.collection('offers').where(admin.firestore.FieldPath.documentId(), 'in', serviceIds).get(),
+            db.collection('artisan_services').where(admin.firestore.FieldPath.documentId(), 'in', serviceIds).get(), // MODIFICATO QUI: da 'offers' a 'artisan_services'
             db.collection('vendors').doc(vendorId).get()
         ]);
 
