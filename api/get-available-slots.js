@@ -125,13 +125,23 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'Dati mancanti per la verifica del servizio (vendorId, serviceId, date).' });
       }
 
+      // Prepara il range di date per la query delle prenotazioni esistenti
+      // Recupera le prenotazioni che iniziano il giorno prima o il giorno target
+      const currentDayUTC = new Date(date + 'T00:00:00Z'); // Inizio del giorno target in UTC
+      const dayBeforeUTC = new Date(currentDayUTC);
+      dayBeforeUTC.setUTCDate(dayBeforeUTC.getUTCDate() - 1); // Inizio del giorno precedente
+
+      const dayEndUTC = new Date(currentDayUTC);
+      dayEndUTC.setUTCHours(23, 59, 59, 999); // Fine del giorno target in UTC
+
       const [serviceDoc, vendorDoc, bookingsSnapshot] = await Promise.all([
-          db.collection('artisan_services').doc(serviceId).get(), // MODIFICATO QUI: da 'offers' a 'artisan_services'
+          db.collection('artisan_services').doc(serviceId).get(),
           db.collection('vendors').doc(vendorId).get(),
           db.collection('bookings')
             .where('vendorId', '==', vendorId)
-            .where('startDateTime', '>=', new Date(date + 'T00:00:00Z')) // Inizio giornata UTC
-            .where('startDateTime', '<=', new Date(date + 'T23:59:59Z')) // Fine giornata UTC
+            // Cerca prenotazioni che iniziano dal giorno prima fino alla fine del giorno target
+            .where('startDateTime', '>=', admin.firestore.Timestamp.fromDate(dayBeforeUTC))
+            .where('startDateTime', '<=', admin.firestore.Timestamp.fromDate(dayEndUTC))
             .where('status', 'in', ['confirmed', 'paid', 'pending', 'rescheduled'])
             .get()
       ]);
@@ -145,16 +155,21 @@ module.exports = async (req, res) => {
 
       if (!vendorDoc.exists || !vendorDoc.data().opening_hours_structured) { return res.status(200).json({ slots: [], message: 'Orari del negozio non configurati.' }); }
       
-      const currentDayUTC = new Date(date + 'T00:00:00Z'); // Assicura che sia inizio giornata UTC
       const dayOfWeek = ["Dom", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab"][currentDayUTC.getUTCDay()];
       const todayHours = vendorDoc.data().opening_hours_structured.find(d => d.day === dayOfWeek);
       
       if (!todayHours || !todayHours.isOpen) { return res.status(200).json({ slots: [], message: 'Negozio chiuso in questo giorno.' }); }
 
+      // FILTRA LE PRENOTAZIONI RECUPERATE PER VERIFICARE LA REALE SOVRAPPOSIZIONE CON IL GIORNO TARGET
       const existingBookings = bookingsSnapshot.docs.map(doc => ({
         start: doc.data().startDateTime.toDate(), 
         end: doc.data().endDateTime.toDate(), // endDateTime è già la fine dell'occupazione
-      }));
+      })).filter(booking => {
+          // Un booking si sovrappone al giorno target se:
+          // (inizio booking < fine giorno target) AND (fine booking > inizio giorno target)
+          return booking.start.getTime() < dayEndUTC.getTime() && booking.end.getTime() > currentDayUTC.getTime();
+      });
+
 
       const availableSlots = [];
       const slotIncrement = 5; // Slot di intervallo di 5 minuti per maggiore precisione
@@ -250,8 +265,17 @@ module.exports = async (req, res) => {
             return res.status(400).json({ error: 'Dati mancanti per il riepilogo mensile (vendorId, serviceId, year, month).' });
         }
 
+        // Calcola il range di date per la query delle prenotazioni esistenti
+        const firstDayOfMonth = new Date(Date.UTC(year, month, 1));
+        const lastDayOfMonth = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
+
+        // Per recuperare le prenotazioni che iniziano prima del mese ma finiscono dentro,
+        // retrocediamo di un giorno l'inizio della query.
+        const queryStartDateTime = new Date(firstDayOfMonth);
+        queryStartDateTime.setUTCDate(queryStartDateTime.getUTCDate() - 1); 
+
         const [serviceDoc, vendorDoc] = await Promise.all([
-            db.collection('artisan_services').doc(serviceId).get(), // MODIFICATO QUI: da 'offers' a 'artisan_services'
+            db.collection('artisan_services').doc(serviceId).get(),
             db.collection('vendors').doc(vendorId).get()
         ]);
 
@@ -265,21 +289,24 @@ module.exports = async (req, res) => {
         if (!vendorDoc.exists || !vendorDoc.data().opening_hours_structured) { return res.status(200).json({ summary: {}, message: 'Orari del negozio non configurati.' }); }
         const vendorOpeningHours = vendorDoc.data().opening_hours_structured;
 
-        // Date range per la query delle prenotazioni (inizio/fine mese in UTC)
-        const firstDayOfMonth = new Date(Date.UTC(year, month, 1));
-        const lastDayOfMonth = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
-
         const bookingsSnapshot = await db.collection('bookings')
             .where('vendorId', '==', vendorId)
-            .where('startDateTime', '>=', admin.firestore.Timestamp.fromDate(firstDayOfMonth))
+            // Cerca prenotazioni che iniziano dal giorno prima del mese fino alla fine del mese
+            .where('startDateTime', '>=', admin.firestore.Timestamp.fromDate(queryStartDateTime))
             .where('startDateTime', '<=', admin.firestore.Timestamp.fromDate(lastDayOfMonth))
             .where('status', 'in', ['confirmed', 'paid', 'pending', 'rescheduled'])
             .get();
 
+        // FILTRA LE PRENOTAZIONI RECUPERATE PER VERIFICARE LA REALE SOVRAPPOSIZIONE CON IL MESE TARGET
         const existingBookings = bookingsSnapshot.docs.map(doc => ({
             start: doc.data().startDateTime.toDate(),
             end: doc.data().endDateTime.toDate(), // endDateTime è già la fine dell'occupazione
-        }));
+        })).filter(booking => {
+            // Un booking si sovrappone al mese target se:
+            // (inizio booking < fine mese target) AND (fine booking > inizio mese target)
+            return booking.start.getTime() < lastDayOfMonth.getTime() && booking.end.getTime() > firstDayOfMonth.getTime();
+        });
+
 
         const monthlySummary = {};
         const slotIncrement = 5; // Slot di intervallo di 5 minuti per maggiore precisione
@@ -398,9 +425,14 @@ module.exports = async (req, res) => {
         const startDateObj = new Date(start_date + 'T00:00:00Z');
         const endDateObj = new Date(end_date + 'T23:59:59Z');
 
+        // Prepara il range di date per la query delle prenotazioni esistenti
+        // Retrocediamo di un giorno l'inizio della query per catturare le prenotazioni che iniziano prima ma si estendono nel range.
+        const queryStartDate = new Date(startDateObj);
+        queryStartDate.setUTCDate(queryStartDate.getUTCDate() - 1); 
+
         // Carica tutti i servizi richiesti e gli orari di apertura del venditore in una volta
         const [servicesSnapshot, vendorDoc] = await Promise.all([
-            db.collection('artisan_services').where(admin.firestore.FieldPath.documentId(), 'in', serviceIds).get(), // MODIFICATO QUI: da 'offers' a 'artisan_services'
+            db.collection('artisan_services').where(admin.firestore.FieldPath.documentId(), 'in', serviceIds).get(),
             db.collection('vendors').doc(vendorId).get()
         ]);
 
@@ -414,19 +446,26 @@ module.exports = async (req, res) => {
         }
         const vendorOpeningHours = vendorDoc.data().opening_hours_structured;
 
-        // Carica tutte le prenotazioni esistenti per l'intero range di date
+        // Carica tutte le prenotazioni esistenti per l'intero range di date, con un buffer iniziale
         const bookingsSnapshot = await db.collection('bookings')
             .where('vendorId', '==', vendorId)
-            .where('startDateTime', '>=', admin.firestore.Timestamp.fromDate(startDateObj))
+            // Cerca prenotazioni che iniziano dal giorno prima del range fino alla fine del range
+            .where('startDateTime', '>=', admin.firestore.Timestamp.fromDate(queryStartDate))
             .where('startDateTime', '<=', admin.firestore.Timestamp.fromDate(endDateObj))
             .where('status', 'in', ['confirmed', 'paid', 'pending', 'rescheduled'])
             .get();
 
+        // FILTRA LE PRENOTAZIONI RECUPERATE PER VERIFICARE LA REALE SOVRAPPOSIZIONE CON IL RANGE TARGET
         const existingBookings = bookingsSnapshot.docs.map(doc => ({
             start: doc.data().startDateTime.toDate(),
             end: doc.data().endDateTime.toDate(),
-            serviceId: doc.data().serviceId, // Aggiunto per filtrare per servizio se necessario, anche se l'overlap è globale
-        }));
+            serviceId: doc.data().serviceId,
+        })).filter(booking => {
+            // Un booking si sovrappone al range target se:
+            // (inizio booking < fine range target) AND (fine booking > inizio range target)
+            return booking.start.getTime() < endDateObj.getTime() && booking.end.getTime() > startDateObj.getTime();
+        });
+
 
         const availableSlotsPerService = {};
         const slotIncrement = 5; // Intervallo di slot di 5 minuti
@@ -460,10 +499,15 @@ module.exports = async (req, res) => {
 
                 if (!todayHours || !todayHours.isOpen) continue;
 
-                // Filtra le prenotazioni per il giorno corrente
-                const bookingsForDay = existingBookings.filter(booking => 
-                    booking.start.toISOString().split('T')[0] === formattedDate
-                );
+                // Filtra le prenotazioni per il giorno corrente dal set di `existingBookings`
+                const bookingsForDay = existingBookings.filter(booking => {
+                    const bookingDayStart = new Date(booking.start);
+                    bookingDayStart.setUTCHours(0, 0, 0, 0);
+                    const bookingDayEnd = new Date(booking.end);
+                    bookingDayEnd.setUTCHours(23, 59, 59, 999);
+                    // Un booking è rilevante per questo `currentDate` se si sovrappone al 24h interval di `currentDate`
+                    return booking.start.getTime() < new Date(currentDate).setUTCHours(23,59,59,999) && booking.end.getTime() > currentDate.getTime();
+                });
 
                 for (const slot of todayHours.slots) {
                     if (!slot.from || !slot.to) continue;
