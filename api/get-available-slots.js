@@ -67,12 +67,27 @@ module.exports = async (req, res) => {
         }
 
         const startDateTime = new Date(payload.startDateTime);
-        // L'endDateTime è già stata calcolata correttamente dal frontend usando totalOccupiedTimeMinutes
-        const endDateTime = new Date(payload.endDateTime);
+        const endDateTime = new Date(payload.endDateTime); // Questa è l'endDateTime calcolata dal frontend
 
         if (isNaN(startDateTime) || isNaN(endDateTime)) {
             return res.status(400).json({ error: 'Date/Ore non valide nel payload di salvataggio. Assicurati siano stringhe ISO.' });
         }
+
+        // --- NUOVO CONTROLLO DI DISPONIBILITÀ A LIVELLO DI BACKEND ---
+        // Questo è il cuore della soluzione definitiva per evitare sovrapposizioni
+        const existingOverlaps = await db.collection('bookings')
+            .where('vendorId', '==', payload.vendorId)
+            .where('status', 'in', ['confirmed', 'paid', 'pending', 'rescheduled'])
+            .where('startDateTime', '<', admin.firestore.Timestamp.fromDate(endDateTime)) // Inizio esistente < Fine nuova
+            .where('endDateTime', '>', admin.firestore.Timestamp.fromDate(startDateTime)) // Fine esistente > Inizio nuova
+            .get();
+
+        if (!existingOverlaps.empty) {
+            // Se ci sono sovrapposizioni, NON permettere il salvataggio
+            console.warn(`Tentativo di prenotazione sovrapposta rilevato per vendorId ${payload.vendorId} alle ${startDateTime.toISOString()}.`);
+            return res.status(409).json({ error: 'Lo slot selezionato non è più disponibile o si sovrappone con una prenotazione esistente. Per favore, scegli un altro orario.' });
+        }
+        // --- FINE NUOVO CONTROLLO ---
         
         const bookingData = {
             vendorId: payload.vendorId,
