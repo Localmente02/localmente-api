@@ -579,9 +579,77 @@ module.exports = async (req, res) => {
         }
         return res.status(200).json({ availableSlots: availableSlotsPerService, message: 'Slot disponibili per range di servizi generati.' });
     }
+    // =======================================================
+    // NUOVA LOGICA: REGISTRAZIONE CLIENTE PREFERITO
+    // =======================================================
+    else if (action === 'register_preferred_client') {
+        const { vendorId, name, surname, phone, email, notes } = req.body;
+
+        if (!vendorId || !name || !phone) {
+            return res.status(400).json({ error: 'Dati cliente incompleti. ID negoziante, nome e telefono sono obbligatori.' });
+        }
+        if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+             return res.status(400).json({ error: 'Formato email non valido.' });
+        }
+        if (vendorId.length !== 20) { 
+            return res.status(400).json({ error: 'ID negoziante non valido.' });
+        }
+        
+        const vendorRef = db.collection('vendors').doc(vendorId);
+        const vendorDoc = await vendorRef.get();
+        if (!vendorDoc.exists) {
+            return res.status(404).json({ error: 'Negoziante non trovato.' });
+        }
+
+        // Verifica se un cliente con lo stesso nome e telefono esiste già per questo venditore
+        const existingClientSnap = await vendorRef.collection('clients')
+            .where('name', '==', name)
+            .where('phone', '==', phone)
+            .limit(1)
+            .get();
+
+        if (!existingClientSnap.empty) {
+            // Se esiste, aggiorniamo il cliente esistente invece di crearne uno nuovo
+            const existingClientDoc = existingClientSnap.docs[0];
+            const updatedData = {
+                surname: surname || existingClientDoc.data().surname || null,
+                email: email || existingClientDoc.data().email || null,
+                notes: notes || existingClientDoc.data().notes || null,
+                lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                source: 'civora_storefront_update', // Aggiornato dalla vetrina
+            };
+            await existingClientDoc.ref.update(updatedData);
+            return res.status(200).json({ 
+                success: true, 
+                message: 'Cliente preferito aggiornato con successo.',
+                clientId: existingClientDoc.id
+            });
+        }
+
+
+        // Altrimenti, aggiungi un nuovo documento
+        const clientData = {
+            name: name,
+            surname: surname || null,
+            phone: phone,
+            email: email || null,
+            notes: notes || null,
+            registeredAt: admin.firestore.FieldValue.serverTimestamp(),
+            lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+            source: 'civora_storefront',
+        };
+
+        const docRef = await vendorRef.collection('clients').add(clientData);
+
+        return res.status(200).json({ 
+            success: true, 
+            message: 'Cliente preferito registrato con successo.',
+            clientId: docRef.id
+        });
+    }
 
   } catch (error) {
-    console.error('Errore in get-available-slots:', error);
+    console.error('Errore nella funzione Vercel:', error);
     res.status(500).json({ error: 'Errore interno del server.', details: error.message });
   }
 };
